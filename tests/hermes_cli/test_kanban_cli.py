@@ -173,6 +173,43 @@ def test_run_slash_dispatch_dry_run_counts(kanban_home):
     assert "Spawned:" in out
 
 
+def test_run_slash_dispatch_dry_run_surfaces_respawn_guarded_active_pr(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="impl with pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            tid,
+            "worker",
+            "review-required handoff: https://github.com/NousResearch/hermes-agent/pull/123",
+        )
+
+    out = kc.run_slash("dispatch --dry-run --json")
+    payload = json.loads(out)
+
+    assert payload["spawned"] == []
+    assert {"task_id": tid, "reason": "active_pr"} in payload["respawn_guarded"]
+
+
+def test_run_slash_dispatch_plain_surfaces_respawn_guarded_active_pr(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="impl with pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            tid,
+            "worker",
+            "PR ready: https://github.com/NousResearch/hermes-agent/pull/456",
+        )
+
+    out = kc.run_slash("dispatch --dry-run")
+
+    assert "Respawn-guarded:" in out
+    assert f"{tid} (active_pr)" in out
+
+
 def test_run_slash_context_output_format(kanban_home):
     out = kc.run_slash("create 'tech spec' --assignee alice --body 'write an RFC'")
     import re

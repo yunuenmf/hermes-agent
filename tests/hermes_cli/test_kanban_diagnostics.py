@@ -466,6 +466,24 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+def test_active_pr_respawn_guard_diagnostic_overrides_generic_stranded_ready():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=now - 2 * 3600),
+        _event("respawn_guarded", ts=now - 60, reason="active_pr"),
+    ]
+
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+
+    assert [d.kind for d in diags] == ["active_pr_respawn_guarded"]
+    diag = diags[0]
+    assert diag.severity == "warning"
+    assert "review task" in diag.detail
+    assert diag.data["reason"] == "active_pr"
+    assert diag.data["assignee"] == "demo"
+
+
 def test_stranded_in_ready_silent_below_threshold():
     """A ready task only 10 min old should NOT fire."""
     now = 100_000

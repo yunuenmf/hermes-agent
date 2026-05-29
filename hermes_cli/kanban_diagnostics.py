@@ -208,6 +208,22 @@ def _latest_clean_event_ts(events: Iterable[Any]) -> int:
     return latest
 
 
+def _latest_respawn_guard(events: Iterable[Any]) -> tuple[str, int]:
+    """Return ``(reason, created_at)`` for the latest respawn_guarded event."""
+    latest_reason = ""
+    latest_ts = 0
+    for ev in events:
+        if _event_kind(ev) != "respawn_guarded":
+            continue
+        ts = _event_ts(ev)
+        if ts < latest_ts:
+            continue
+        payload = _parse_payload(ev)
+        latest_reason = str(payload.get("reason") or "").strip()
+        latest_ts = ts
+    return latest_reason, latest_ts
+
+
 # Standard always-available actions. Every diagnostic can offer these as
 # fallbacks regardless of kind — they're the two baseline recovery
 # primitives the kernel supports.
@@ -913,6 +929,13 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         # double-flag the same condition.
         return []
 
+    guard_reason, guard_ts = _latest_respawn_guard(events)
+    guard_window = int(cfg.get("active_pr_guard_window_seconds", 24 * 60 * 60))
+    if guard_reason == "active_pr" and guard_ts and now - guard_ts <= guard_window:
+        # A task with an active PR guard is blocked by review workflow, not
+        # an unknown missing worker. A more specific rule below owns it.
+        return []
+
     # Find the most recent event that put this task into ready.
     # ``created`` covers tasks born ready; ``promoted`` covers parent-
     # done auto-promotion; ``reclaimed`` covers TTL/crash recovery;
@@ -991,6 +1014,54 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_active_pr_respawn_guarded(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Ready task cannot spawn because the respawn guard found an active PR."""
+    if _task_field(task, "status") != "ready":
+        return []
+    if _task_field(task, "claim_lock"):
+        return []
+    assignee = (_task_field(task, "assignee") or "").strip()
+    if not assignee:
+        return []
+    reason, guard_ts = _latest_respawn_guard(events)
+    guard_window = int(cfg.get("active_pr_guard_window_seconds", 24 * 60 * 60))
+    if reason != "active_pr" or not guard_ts or now - guard_ts > guard_window:
+        return []
+
+    return [Diagnostic(
+        kind="active_pr_respawn_guarded",
+        severity="warning",
+        title="Ready task is blocked by active PR respawn guard",
+        detail=(
+            "The dispatcher is intentionally not spawning this ready task "
+            "because a recent comment contains a GitHub PR URL. Confirm a "
+            "downstream review task exists and is progressing; if not, "
+            "block this implementation task with an exact review/unblock "
+            "question instead of leaving it silently ready."
+        ),
+        actions=[
+            DiagnosticAction(
+                kind="cli_hint",
+                label="Inspect recent respawn guard events",
+                payload={"command": "hermes kanban tail"},
+            ),
+            DiagnosticAction(
+                kind="comment",
+                label="Add review-task or unblock context",
+                payload={},
+            ),
+        ],
+        first_seen_at=guard_ts,
+        last_seen_at=guard_ts,
+        count=1,
+        data={
+            "reason": reason,
+            "assignee": assignee,
+            "guarded_at": guard_ts,
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -1001,6 +1072,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_active_pr_respawn_guarded,
     _rule_stranded_in_ready,
 ]
 
@@ -1015,6 +1087,7 @@ DIAGNOSTIC_KINDS = (
     "repeated_crashes",
     "stuck_in_blocked",
     "block_unblock_cycling",
+    "active_pr_respawn_guarded",
     "stranded_in_ready",
 )
 
@@ -1027,6 +1100,7 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    "active_pr_guard_window_seconds": 24 * 60 * 60,
     # Stranded-task threshold. 30 min by default — below that, the
     # signal is dominated by tasks that are about to be claimed on the
     # next dispatcher tick (default 60s) and would just be noise.
