@@ -101,6 +101,7 @@ AUTHOR_MAP = {
     "hermes@marian.local": "Schrotti77",
     "1920071390@campus.ouj.ac.jp": "zapabob",
     "gaia@gaia.local": "jfuenmayor",
+    "hermes-agent@local": "yunuenmf",
     "jiahuigu@users.noreply.github.com": "Jiahui-Gu",
     "openhands@all-hands.dev": "YLChen-007",
     "3153586+xzessmedia@users.noreply.github.com": "xzessmedia",
