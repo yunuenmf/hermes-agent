@@ -2,6 +2,8 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+**Never give up on the right solution.**
+
 ## Development Environment
 
 ```bash
@@ -65,6 +67,40 @@ hermes-agent/
 **Logs:** `~/.hermes/logs/` — `agent.log` (INFO+), `errors.log` (WARNING+),
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
+
+## TypeScript Style
+
+Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+
+- Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
+- Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
+- Components that render from an atom should use `useStore`. Non-rendering actions should read with `$atom.get()`.
+- Do not pass state through three components when the leaf can subscribe to the atom.
+- Keep persistence beside the atom that owns it.
+- Keep route roots thin. They compose routes and shell; they should not become controllers.
+- No monolithic hooks. A hook should own one narrow job.
+- Prefer colocated action modules over hidden god hooks.
+- If a callback is pure side effect, use the terse void form:
+  `onState={st => void setGatewayState(st)}`.
+- Async UI handlers should make intent explicit:
+  `onClick={() => void save()}`.
+- Prefer interfaces for public props and shared object shapes. Avoid `type X = { ... }` for object props.
+- Extend React primitives for props: `React.ComponentProps<'button'>`, `React.ComponentProps<typeof Dialog>`, `Omit<...>`, `Pick<...>`.
+- Table-driven beats condition ladders when mapping ids, routes, or views.
+- `src/app` owns routes, pages, and page-specific components.
+- `src/store` owns shared atoms.
+- `src/lib` owns shared pure helpers.
+
+## Internal Profile Communication
+
+Use direct/internal messaging for profile-to-profile discussion. Kanban is the durable work queue, not a chat transport: do not create contact tasks merely to ask, notify, ping, or refine with another profile. After a direct discussion, record only durable outcomes, dependencies, blockers, evidence, or follow-up work on the board.
+
+Deterministic toolbox:
+
+- Direct profile command / runner path: `hermes -p <profile> chat -q '<question or instruction>' --toolsets safe`. This starts the named profile directly and does not create a Kanban row. Add `--skills <skill>` when the profile needs a specific policy pack.
+- Structured internal message path: use `send_message(target='<platform-or-profile-room>', message='<structured note>')` from an agent, or `printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'` from shell scripts when a private profile room/channel exists.
+- Escalation: contact the human from Matrix (or another human-facing channel) only when the decision/action genuinely requires Yunuen; otherwise keep profile discussion internal. If a Matrix profile-room send is blocked or unvalidated, do not create a Kanban contact task as a workaround — fall back to the direct profile runner path, or block only when human action is truly required.
+- Kanban remains for durable work items, parent/child dependencies, blockers, evidence, review handoffs, and post-discussion outcomes.
 
 ## File Dependency Chain
 
@@ -1013,16 +1049,38 @@ def profile_env(tmp_path, monkeypatch):
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-4 xdist workers matching GHA ubuntu-latest). Direct `pytest` on a 16+ core
-developer machine with API keys set diverges from CI in ways that have caused
-multiple "works locally, fails in CI" incidents (and the reverse).
+`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
+on a 16+ core developer machine with API keys set diverges from CI in ways
+that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 
 ```bash
 scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+scripts/run_tests.sh --no-isolate tests/foo/          # disable subprocess isolation (faster, for debugging)
 ```
+
+### Subprocess-per-test isolation
+
+Every test runs in a freshly-spawned Python subprocess via the in-tree plugin
+at `tests/_isolate_plugin.py`. This means module-level dicts/sets and
+ContextVars from one test cannot leak into the next — the historic
+`_reset_module_state` autouse fixture is gone.
+
+Implementation notes:
+
+- The plugin uses `multiprocessing.get_context("spawn")`, which works on
+  Linux, macOS, and Windows alike (POSIX `fork` is not used).
+- Per-test overhead is ~0.5–1.0s (Python startup + pytest collection). xdist
+  parallelism amortizes this across cores; on a 20-core box the full suite
+  finishes in roughly the same wall time as before, but flake-free.
+- `isolate_timeout` (configured in `pyproject.toml`) caps each test at 30s.
+  Hangs are killed and surfaced as a failure report.
+- Pass `--no-isolate` to disable isolation — useful when debugging a single
+  test interactively, or when you specifically want to verify state leakage.
+- The plugin disables itself in child processes (sentinel envvar
+  `HERMES_ISOLATE_CHILD=1`), so there's no fork-bomb risk.
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
 
@@ -1034,7 +1092,7 @@ Five real sources of local-vs-CI drift the script closes:
 | HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
 | Timezone | Local TZ (PDT etc.) | UTC |
 | Locale | Whatever is set | C.UTF-8 |
-| xdist workers | `-n auto` = all cores (20+ on a workstation) | `-n 4` matching CI |
+| xdist workers | `-n auto` = all cores | `-n auto` (safe — subprocess isolation prevents cross-worker flakes) |
 
 `tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
 invocation (including IDE integrations) gets hermetic behavior — but the wrapper
@@ -1042,15 +1100,21 @@ is belt-and-suspenders.
 
 ### Running without the wrapper (only if you must)
 
-If you can't use the wrapper (e.g. on Windows or inside an IDE that shells
-pytest directly), at minimum activate the venv and pass `-n 4`:
+If you can't use the wrapper (e.g. inside an IDE that shells pytest directly),
+at minimum activate the venv. The isolation plugin loads automatically from
+`addopts` in `pyproject.toml`, so you get the same per-test process isolation
+either way.
 
 ```bash
 source .venv/bin/activate   # or: source venv/bin/activate
-python -m pytest tests/ -q -n 4
+python -m pytest tests/ -q
 ```
 
-Worker count above 4 will surface test-ordering flakes that CI never sees.
+If you need to bypass isolation for fast feedback while debugging:
+
+```bash
+python -m pytest tests/agent/test_foo.py -q --no-isolate
+```
 
 Always run the full suite before pushing changes.
 

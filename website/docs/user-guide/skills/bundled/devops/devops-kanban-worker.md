@@ -31,6 +31,12 @@ The following is the complete skill definition that Hermes loads when this skill
 
 > You're seeing this skill because the Hermes Kanban dispatcher spawned you as a worker with `--skills kanban-worker` — it's loaded automatically for every dispatched worker. The **lifecycle** (6 steps: orient → work → heartbeat → block/complete) also lives in the `KANBAN_GUIDANCE` block that's auto-injected into your system prompt. This skill is the deeper detail: good handoff shapes, retry diagnostics, edge cases.
 
+## Live status vocabulary
+
+Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked`, `dormant`. Internal Kanban DB/workflow aliases remain valid during migration: `ready`/`queue`/`running`/`in_progress`/`review` map to `working`; dependency-held `todo` and `scheduled` map to `waiting`; unspecced `triage` maps to `dormant`; `done` is completion history only. Reserve `blocked` for a specific active task/duty/dependency prevented by human action.
+
+For Matrix/profile-facing project communication, use generic `Self status:` and `Lineage status:` lines. Do not introduce role-specific replacements such as `Coordinator status:`, and do not use legacy `Blocker status:` or `NOT BLOCKED` wording in new prompts. `Self status` describes this profile's own active action/wait/human blocker/dormant condition; `Lineage status` aggregates structural descendants and is separate from task dependency links. When deterministic output is needed, prefer the repo helper `python scripts/render_status_lines.py --self ... --lineage-count ...` over recomputing the wording from broad LLM context.
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:
@@ -39,7 +45,7 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 |---|---|---|
 | `scratch` | Fresh tmp dir, yours alone | Read/write freely; it gets GC'd when the task is archived. |
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
-| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> <branch>` from the main repo first, then cd and work normally. Commit work here. |
+| `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
 ## Tenant isolation
 
@@ -175,11 +181,25 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
 
+## Internal profile communication
+
+Profile-to-profile discussion should not be modeled as a Kanban contact task. If you need quick peer input and you have permission/tools, use a direct profile command such as `hermes -p <profile> chat -q '<question>' --toolsets safe`, or send a structured internal note with `send_message` / `hermes send` to a validated private profile room. Record the result on Kanban only when it becomes durable evidence, a dependency, a blocker, review feedback, or concrete follow-up work.
+
+If a Matrix/profile-room send is blocked or unvalidated, fall back to the direct profile runner path. Escalate to the human only when the question requires human action or a decision; otherwise do not create a Kanban task merely to ping another profile.
+
+## Notification routing
+
+You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
+- `notification_sources: ['*']` accepts subscriptions from all profiles.
+- `notification_sources: ['default', 'zilor-ppt']` or `"default,zilor-ppt"` restricts subscriptions to specified profiles.
+- Omitting the key keeps the default behavior (profile isolation).
+
 ## Do NOT
 
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
+- Create Kanban contact tasks merely to ask, notify, ping, or refine with another profile; use direct/internal messaging and record only durable outcomes.
 - Complete a task you didn't actually finish. Block it instead.
 
 ## Pitfalls

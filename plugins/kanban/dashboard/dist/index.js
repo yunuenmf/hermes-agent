@@ -24,6 +24,23 @@
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
+  // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
+  // Fall back to a native <input type="checkbox"> shim so older hosts that
+  // predate the design-system rollout still render. The shim normalises
+  // Radix's onCheckedChange(checked) signature to native onChange(event).
+  const Checkbox = SDK.components.Checkbox || function (props) {
+    const { checked, onCheckedChange, className, onClick, ...rest } = props;
+    return h("input", Object.assign({
+      type: "checkbox",
+      checked: !!checked,
+      className: className,
+      onClick: onClick,
+      onChange: function (e) {
+        if (onCheckedChange) onCheckedChange(e.target.checked);
+      },
+    }, rest));
+  };
+
   // useI18n is a hook each component calls locally. Older host dashboards
   // may not expose it yet; fall back to a shim so the bundle still renders
   // English against an older host SDK. English fallback strings live
@@ -69,28 +86,44 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  // Order matches BOARD_COLUMNS in plugin_api.py. Columns are canonical
+  // human-facing live statuses; storage workflow aliases stay internal.
+  const COLUMN_ORDER = ["working", "waiting", "blocked", "dormant", "done"];
+  const COLUMN_TARGET_STATUS = {
+    working: "ready",
+    waiting: "todo",
+    blocked: "blocked",
+    dormant: "triage",
+    done: "done",
+    archived: "archived",
+  };
+  function targetStatusForColumn(status) {
+    return COLUMN_TARGET_STATUS[status] || status;
+  }
+  function liveStatusForAlias(status) {
+    if (status === "ready" || status === "queue" || status === "running" || status === "in_progress" || status === "review") return "working";
+    if (status === "todo" || status === "scheduled") return "waiting";
+    if (status === "triage") return "dormant";
+    return status;
+  }
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
-    triage: "Triage",
-    todo: "Todo",
-    ready: "Ready",
-    running: "In Progress",
+    working: "Working",
+    waiting: "Waiting",
     blocked: "Blocked",
-    done: "Done",
+    dormant: "Dormant",
+    done: "Done (history)",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
-    triage: "Raw ideas — a specifier will flesh out the spec",
-    todo: "Waiting on dependencies or unassigned",
-    ready: "Dependencies satisfied; assign a profile to dispatch",
-    running: "Claimed by a worker — in-flight",
-    blocked: "Worker asked for human input",
-    done: "Completed",
-    archived: "Archived",
+    working: "Working: active work is underway or immediately queued/spawnable",
+    waiting: "Waiting: a specific active task/duty/dependency is waiting on non-human/system action",
+    blocked: "Blocked: requires human intervention; non-human pauses should be waiting",
+    dormant: "Dormant: no active actionable assignment exists",
+    done: "Done is completion history, not live availability",
+    archived: "Hidden from normal board views",
   };
   const FALLBACK_DESTRUCTIVE = {
     done: "Mark this task as done? The worker's claim is released and dependent children become ready.",
@@ -135,11 +168,10 @@
   }
 
   const COLUMN_DOT = {
-    triage: "hermes-kanban-dot-triage",
-    todo: "hermes-kanban-dot-todo",
-    ready: "hermes-kanban-dot-ready",
-    running: "hermes-kanban-dot-running",
+    working: "hermes-kanban-dot-ready",
+    waiting: "hermes-kanban-dot-todo",
     blocked: "hermes-kanban-dot-blocked",
+    dormant: "hermes-kanban-dot-triage",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -649,14 +681,15 @@
     const moveTask = useCallback(function (taskId, newStatus) {
       const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const patch = withCompletionSummary({ status: newStatus }, 1, t);
+      const targetStatus = targetStatusForColumn(newStatus);
+      const patch = withCompletionSummary({ status: targetStatus }, 1, t);
       if (!patch) return;
       setBoardData(function (b) {
         if (!b) return b;
         let moved = null;
         const columns = b.columns.map(function (col) {
           const next = col.tasks.filter(function (t) {
-            if (t.id === taskId) { moved = Object.assign({}, t, { status: newStatus }); return false; }
+            if (t.id === taskId) { moved = Object.assign({}, t, { status: targetStatus, live_status: liveStatusForAlias(targetStatus) }); return false; }
             return true;
           });
           return Object.assign({}, col, { tasks: next });
@@ -683,10 +716,11 @@
       setFailedIds(new Set());
     }, []);
     const moveSelected = useCallback(function (newStatus) {
-      const confirmMsg = DESTRUCTIVE_TRANSITIONS[newStatus];
+      const confirmMsg = getDestructiveConfirm(t, newStatus);
       if (confirmMsg && !window.confirm(confirmMsg)) return;
       if (selectedIds.size === 0) return;
-      const patch = withCompletionSummary({ status: newStatus }, selectedIds.size);
+      const targetStatus = targetStatusForColumn(newStatus);
+      const patch = withCompletionSummary({ status: targetStatus }, selectedIds.size);
       if (!patch) return;
       const ids = Array.from(selectedIds);
       // Optimistic UI: remove selected from all columns and prepend to target.
@@ -696,7 +730,7 @@
         const columns = b.columns.map(function (col) {
           const kept = [];
           for (const t of col.tasks) {
-            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: newStatus }));
+            if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: targetStatus, live_status: liveStatusForAlias(targetStatus) }));
             else kept.push(t);
           }
           return Object.assign({}, col, { tasks: kept });
@@ -823,7 +857,11 @@
     const applyBulk = useCallback(function (patch, confirmMsg) {
       if (selectedIds.size === 0) return;
       if (confirmMsg && !window.confirm(confirmMsg)) return;
-      const finalPatch = withCompletionSummary(patch, selectedIds.size, t);
+      const requestedColumnStatus = patch && patch.status;
+      const normalizedPatch = requestedColumnStatus
+        ? Object.assign({}, patch, { status: targetStatusForColumn(requestedColumnStatus) })
+        : patch;
+      const finalPatch = withCompletionSummary(normalizedPatch, selectedIds.size, t);
       if (!finalPatch) return;
       const body = Object.assign({ ids: Array.from(selectedIds) }, finalPatch);
       // Optimistic UI for status moves (same pattern as moveSelected).
@@ -834,12 +872,12 @@
           const columns = b.columns.map(function (col) {
             const kept = [];
             for (const t of col.tasks) {
-              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status }));
+              if (selectedIds.has(t.id)) moved.push(Object.assign({}, t, { status: finalPatch.status, live_status: liveStatusForAlias(finalPatch.status) }));
               else kept.push(t);
             }
             return Object.assign({}, col, { tasks: kept });
           });
-          const dest = columns.find(function (c) { return c.name === finalPatch.status; });
+          const dest = columns.find(function (c) { return c.name === (requestedColumnStatus || liveStatusForAlias(finalPatch.status)); });
           if (dest) dest.tasks = moved.concat(dest.tasks);
           return Object.assign({}, b, { columns });
         });
@@ -1648,11 +1686,10 @@
             h(Label, { className: "text-xs text-muted-foreground" },
               "Orchestration mode"),
             h("label", { className: "flex items-center gap-2 text-xs h-8" },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 checked: !!settings.auto_decompose,
-                onChange: function (e) {
-                  saveSettings({ auto_decompose: !!e.target.checked });
+                onCheckedChange: function (checked) {
+                  saveSettings({ auto_decompose: checked === true });
                 },
               }),
               "Auto-decompose triage tasks",
@@ -1908,10 +1945,9 @@
             }),
           ),
           h("label", { className: "flex items-center gap-2 text-xs" },
-            h("input", {
-              type: "checkbox",
+            h(Checkbox, {
               checked: switchTo,
-              onChange: function (e) { setSwitchTo(e.target.checked); },
+              onCheckedChange: function (checked) { setSwitchTo(checked === true); },
             }),
             tx(t, "switchAfterCreate", "Switch to this board after creating it"),
           ),
@@ -1981,19 +2017,17 @@
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.includeArchived,
-          onChange: function (e) { props.setIncludeArchived(e.target.checked); },
+          onCheckedChange: function (checked) { props.setIncludeArchived(checked === true); },
         }),
         tx(t, "showArchived", "Show archived"),
       ),
       h("label", { className: "flex items-center gap-2 text-xs",
                    title: "Group the Running column by assigned profile" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: props.laneByProfile,
-          onChange: function (e) { props.setLaneByProfile(e.target.checked); },
+          onCheckedChange: function (checked) { props.setLaneByProfile(checked === true); },
         }),
         tx(t, "lanesByProfile", "Lanes by profile"),
       ),
@@ -2034,15 +2068,15 @@
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} ${tx(t, "selected", "selected")}`),
       h(Button, {
-        onClick: function () { props.onApply({ status: "todo" }); },
+        onClick: function () { props.onApply({ status: "waiting" }); },
         size: "sm",
-        title: "Move selected tasks to Todo.",
-      }, "→ todo"),
+        title: "Move selected tasks to Waiting (stored as todo for dispatcher compatibility).",
+      }, "→ waiting"),
       h(Button, {
-        onClick: function () { props.onApply({ status: "ready" }); },
+        onClick: function () { props.onApply({ status: "working" }); },
         size: "sm",
-        title: "Move selected tasks to Ready. Ready tasks are picked up by the dispatcher on the next tick.",
-      }, "→ ready"),
+        title: "Move selected tasks to Working (stored as ready so the dispatcher can pick them up).",
+      }, "→ working"),
       h(Button, {
         onClick: function () { props.onApply({ status: "blocked" },
           `Block ${props.count} task(s)?`); },
@@ -2050,10 +2084,10 @@
         title: "Block selected tasks. Releases any active claims.",
       }, "Block"),
       h(Button, {
-        onClick: function () { props.onApply({ status: "ready" },
+        onClick: function () { props.onApply({ status: "working" },
           `Unblock ${props.count} task(s)?`); },
         size: "sm",
-        title: "Unblock selected tasks (promote to Ready).",
+        title: "Unblock selected tasks (promote to Working; stored as ready).",
       }, "Unblock"),
       h(Button, {
         onClick: function () {
@@ -2122,10 +2156,9 @@
         }, tx(t, "apply", "Apply")),
       ),
       h("label", { className: "hermes-kanban-bulk-reclaim-first", title: "Reclaim any active claims before reassigning" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           checked: reclaimFirst,
-          onChange: function (e) { setReclaimFirst(e.target.checked); },
+          onCheckedChange: function (checked) { setReclaimFirst(checked === true); },
         }),
         "Reclaim first",
       ),
@@ -2286,7 +2319,7 @@
     };
 
     const lanes = useMemo(function () {
-      if (!props.laneByProfile || props.column.name !== "running") return null;
+      if (!props.laneByProfile || props.column.name !== "working") return null;
       const byProfile = {};
       for (const tk of props.column.tasks) {
         const key = tk.assignee || "(unassigned)";
@@ -2313,14 +2346,12 @@
     },
       h("div", { className: "hermes-kanban-column-header",
                  title: colHelp || "" },
-        h("input", {
-          type: "checkbox",
+        h(Checkbox, {
           className: "hermes-kanban-col-check",
           title: "Select all tasks in this column",
           "aria-label": `Select all tasks in ${colLabel || props.column.name}`,
           checked: props.column.tasks.length > 0 && props.column.tasks.every(function (t) { return props.selectedIds.has(t.id); }),
-          onChange: function (e) {
-            e.stopPropagation();
+          onCheckedChange: function () {
             if (props.selectAllInColumn) props.selectAllInColumn(props.column.name);
           },
           onClick: function (e) { e.stopPropagation(); },
@@ -2406,7 +2437,7 @@
     const age = task.status === "running"
       ? task.age.started_age_seconds
       : task.age.created_age_seconds;
-    const tier = STALENESS[task.status];
+    const tier = STALENESS[task.live_status || liveStatusForAlias(task.status)];
     if (!tier || age == null) return "";
     if (age >= tier.red)   return "hermes-kanban-card--stale-red";
     if (age >= tier.amber) return "hermes-kanban-card--stale-amber";
@@ -2461,8 +2492,7 @@
         if (props.toggleSelected) props.toggleSelected(t.id, false);
       }
     };
-    const handleCheckbox = function (e) {
-      e.stopPropagation();
+    const handleCheckedChange = function () {
       props.toggleSelected(t.id, true);
     };
 
@@ -2482,7 +2512,7 @@
       draggable: true,
       tabIndex: 0,
       role: "button",
-      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
+      "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.live_status || liveStatusForAlias(t.status)}`,
       onDragStart: handleDragStart,
       onClick: handleClick,
       onKeyDown: handleKeyDown,
@@ -2495,11 +2525,10 @@
               title: tx(i18n, "selectForBulk", "Select for bulk actions"),
               onClick: function (e) { e.stopPropagation(); },
             },
-              h("input", {
-                type: "checkbox",
+              h(Checkbox, {
                 className: "hermes-kanban-card-check",
                 checked: props.selected,
-                onChange: handleCheckbox,
+                onCheckedChange: handleCheckedChange,
                 onClick: function (e) { e.stopPropagation(); },
                 "aria-label": `Select task ${t.id}`,
               }),
@@ -2592,6 +2621,13 @@
     // input here to save vertical space in the common `scratch` case.
     const [workspaceKind, setWorkspaceKind] = useState("scratch");
     const [workspacePath, setWorkspacePath] = useState("");
+    // Goal-mode: when on, the dispatched worker runs the Ralph-style /goal
+    // loop — a judge re-checks the card after each turn and the worker keeps
+    // going in the same session until done, or the turn budget runs out
+    // (which blocks the card for review). goalMaxTurns is optional; blank
+    // = backend default.
+    const [goalMode, setGoalMode] = useState(false);
+    const [goalMaxTurns, setGoalMaxTurns] = useState("");
 
     const submit = function () {
       const trimmed = title.trim();
@@ -2618,9 +2654,17 @@
       }
       const wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
+      // Goal-mode toggle. Only send the keys when enabled so the request
+      // shape stays small and old dispatchers ignore it cleanly.
+      if (goalMode) {
+        body.goal_mode = true;
+        const gmt = parseInt(goalMaxTurns, 10);
+        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
+      }
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
       setWorkspaceKind("scratch"); setWorkspacePath("");
+      setGoalMode(false); setGoalMaxTurns("");
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -2677,6 +2721,29 @@
         title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
         className: "h-7 text-xs",
       }),
+      h("div", { className: "flex gap-2 items-center" },
+        h("label", {
+          className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
+          title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
+        },
+          h("input", {
+            type: "checkbox",
+            checked: goalMode,
+            onChange: function (e) { setGoalMode(!!e.target.checked); },
+            className: "h-3.5 w-3.5 accent-current",
+          }),
+          tx(t, "goalMode", "goal mode"),
+        ),
+        goalMode ? h(Input, {
+          type: "number",
+          value: goalMaxTurns,
+          onChange: function (e) { setGoalMaxTurns(e.target.value); },
+          placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
+          className: "h-7 text-xs w-40",
+          title: "Turn budget for the goal loop. Blank = backend default (20).",
+          min: 1,
+        }) : null,
+      ),
       h("div", { className: "flex gap-2" },
         h(Select, Object.assign({
           value: workspaceKind,
@@ -2733,6 +2800,8 @@
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
     const [newComment, setNewComment] = useState("");
+    const [uploadBusy, setUploadBusy] = useState(false);
+    const [uploadErr, setUploadErr] = useState(null);
     const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
@@ -2779,6 +2848,49 @@
         load();
         props.onRefresh();
       }).catch(function (e) { setErr(String(e.message || e)); });
+    };
+
+    // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
+    // so the browser sets the multipart boundary. Auth rides the session
+    // cookie + bearer token, matching the rest of the dashboard.
+    const handleUpload = function (fileList) {
+      const files = Array.prototype.slice.call(fileList || []);
+      if (!files.length) return;
+      setUploadBusy(true);
+      setUploadErr(null);
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
+      // Upload sequentially so a partial failure leaves a clear state.
+      let chain = Promise.resolve();
+      files.forEach(function (f) {
+        chain = chain.then(function () {
+          const fd = new FormData();
+          fd.append("file", f, f.name);
+          return fetch(url, { method: "POST", headers: headers, credentials: "same-origin", body: fd })
+            .then(function (resp) {
+              if (!resp.ok) {
+                return resp.text().then(function (txt) {
+                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+                });
+              }
+            });
+        });
+      });
+      chain.then(function () {
+        load();
+        props.onRefresh();
+      }).catch(function (e) {
+        setUploadErr(String(e.message || e));
+      }).finally(function () {
+        setUploadBusy(false);
+      });
+    };
+
+    const handleDeleteAttachment = function (attachmentId) {
+      return SDK.fetchJSON(withBoard(`${API}/attachments/${attachmentId}`, boardSlug), { method: "DELETE" })
+        .then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setUploadErr(String(e.message || e)); });
     };
 
     const doPatch = function (patch, opts) {
@@ -2938,6 +3050,10 @@
           homeBusy: homeBusy,
           onToggleHomeSub: toggleHomeSubscription,
           onRefresh: props.onRefresh,
+          onUpload: handleUpload,
+          onDeleteAttachment: handleDeleteAttachment,
+          uploadBusy: uploadBusy,
+          uploadErr: uploadErr,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-row" },
           h(Input, {
@@ -2960,11 +3076,118 @@
     );
   }
 
+  function _fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  // Attachments section in the task drawer (#35338). Upload button +
+  // list with download links and a delete (×) per row. The download
+  // link hits GET /attachments/:id which streams the file; the worker
+  // context surfaces the same files' absolute paths so a kanban worker
+  // can read them with the file/terminal tools.
+  function AttachmentsSection(props) {
+    const i18n = props.i18n;
+    const atts = props.attachments || [];
+    const fileRef = useRef(null);
+    const [dlErr, setDlErr] = useState(null);
+    // Download via authenticated fetch → blob → synthetic anchor click.
+    // A plain <a href> can't carry the session header/bearer the dashboard
+    // auth middleware requires in loopback mode, so fetch with the token
+    // and hand the browser a blob URL instead.
+    function downloadAttachment(a) {
+      const token = window.__HERMES_SESSION_TOKEN__ || "";
+      const headers = token ? { Authorization: "Bearer " + token } : {};
+      const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
+      setDlErr(null);
+      fetch(url, { headers: headers, credentials: "same-origin" })
+        .then(function (resp) {
+          if (!resp.ok) {
+            return resp.text().then(function (txt) {
+              throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+            });
+          }
+          return resp.blob();
+        })
+        .then(function (blob) {
+          const objUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = objUrl;
+          link.download = a.filename || "attachment";
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(function () { URL.revokeObjectURL(objUrl); }, 10000);
+        })
+        .catch(function (e) { setDlErr(String(e.message || e)); });
+    }
+    return h("div", { className: "hermes-kanban-section" },
+      h("div", { className: "hermes-kanban-section-head" },
+        `${tx(i18n, "attachments", "Attachments")} (${atts.length})`),
+      h("input", {
+        ref: fileRef,
+        type: "file",
+        multiple: true,
+        style: { display: "none" },
+        onChange: function (e) {
+          if (props.onUpload) props.onUpload(e.target.files);
+          // Reset so selecting the same file again re-triggers onChange.
+          try { e.target.value = ""; } catch (_e) { /* ignore */ }
+        },
+      }),
+      h("div", { className: "flex items-center gap-2 mb-2" },
+        h(Button, {
+          size: "sm",
+          variant: "outline",
+          disabled: !!props.uploadBusy,
+          onClick: function () { if (fileRef.current) fileRef.current.click(); },
+        }, props.uploadBusy
+            ? tx(i18n, "uploading", "Uploading…")
+            : tx(i18n, "uploadFile", "Upload file")),
+      ),
+      (props.uploadErr || dlErr)
+        ? h("div", { className: "text-xs text-destructive mb-2" }, props.uploadErr || dlErr)
+        : null,
+      atts.length === 0
+        ? h("div", { className: "text-xs text-muted-foreground" },
+            tx(i18n, "noAttachments", "— no attachments —"))
+        : atts.map(function (a) {
+            return h("div", {
+              key: a.id,
+              className: "flex items-center justify-between gap-2 py-1 text-sm",
+            },
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-attachment-link truncate",
+                title: a.filename,
+                onClick: function () { downloadAttachment(a); },
+              }, a.filename),
+              h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" },
+                _fmtBytes(a.size)),
+              h("button", {
+                type: "button",
+                className: "hermes-kanban-drawer-close",
+                title: tx(i18n, "removeAttachment", "Remove attachment"),
+                onClick: function () {
+                  if (window.confirm(tx(i18n, "confirmRemoveAttachment",
+                      "Remove this attachment?"))) {
+                    if (props.onDelete) props.onDelete(a.id);
+                  }
+                },
+              }, "×"),
+            );
+          }),
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
     const comments = props.data.comments || [];
     const events = props.data.events || [];
+    const attachments = props.data.attachments || [];
     const links = props.data.links || { parents: [], children: [] };
 
     return h("div", { className: "hermes-kanban-drawer-body" },
@@ -2985,7 +3208,7 @@
             }, t.title || tx(i18n, "untitled", "(untitled)")),
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
-        h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        h(MetaRow, { label: tx(i18n, "status", "Status"), value: `${(t.live_status || t.status)}${t.live_status && t.live_status !== t.status ? " (alias: " + t.status + ")" : ""}` }),
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
@@ -2996,6 +3219,12 @@
         (t.skills && t.skills.length > 0) ? h(MetaRow, {
           label: tx(i18n, "skills", "Skills"),
           value: t.skills.join(", "),
+        }) : null,
+        t.goal_mode ? h(MetaRow, {
+          label: tx(i18n, "goalMode", "Goal mode"),
+          value: t.goal_max_turns
+            ? `on (max ${t.goal_max_turns} turns)`
+            : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
@@ -3034,6 +3263,15 @@
         h("div", { className: "hermes-kanban-section-head" }, tx(i18n, "result", "Result")),
         h(MarkdownBlock, { source: t.result, enabled: props.renderMarkdown }),
       ) : null,
+      h(AttachmentsSection, {
+        attachments: attachments,
+        boardSlug: props.boardSlug,
+        onUpload: props.onUpload,
+        onDelete: props.onDeleteAttachment,
+        uploadBusy: props.uploadBusy,
+        uploadErr: props.uploadErr,
+        i18n: i18n,
+      }),
       h("div", { className: "hermes-kanban-section" },
         h("div", { className: "hermes-kanban-section-head" },
           `${tx(i18n, "comments", "Comments")} (${comments.length})`),
