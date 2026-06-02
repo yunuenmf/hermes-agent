@@ -38,7 +38,7 @@ def _statuses_from_counts(count_args: list[list[str]] | None) -> list[str]:
 
 
 def _statuses_from_json(path: Path) -> list[str]:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, dict):
         for key in ("descendants", "profiles", "tasks"):
             if key in data:
