@@ -2509,6 +2509,14 @@ def add_comment(
             (task_id, author.strip(), body.strip(), now),
         )
         _append_event(conn, task_id, "commented", {"author": author, "len": len(body)})
+        warning = blocked_comment_action_warning(conn, task_id, body)
+        if warning:
+            _append_event(
+                conn,
+                task_id,
+                "blocked_comment_action_warning",
+                {"warning": warning},
+            )
         return int(cur.lastrowid or 0)
 
 
