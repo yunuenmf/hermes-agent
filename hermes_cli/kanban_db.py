@@ -3479,6 +3479,43 @@ def _verify_created_cards(
 _TASK_ID_PROSE_RE = re.compile(r"\bt_[a-f0-9]{8,}\b")
 
 
+_BLOCKED_COMMENT_ACTION_RE = re.compile(
+    r"\b("
+    r"ask|call|contact|dm|email|message|notify|ping|reach\s+out|send|tell|"
+    r"please|must|should|need(?:s)?\s+to|follow\s+up"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+BLOCKED_COMMENT_ACTION_WARNING = (
+    "Comment recorded only: this task is blocked, so no worker will be "
+    "spawned or woken by this comment. For peer discussion, send a direct "
+    "profile command or structured internal message yourself. Use Kanban "
+    "only for durable work/dependencies/outcomes: create a new assigned "
+    "work task when actual follow-up work is required, or explicitly "
+    "unblock/re-dispatch the blocked task with the instruction."
+)
+
+
+def blocked_comment_action_warning(
+    conn: sqlite3.Connection, task_id: str, body: str
+) -> Optional[str]:
+    """Return deterministic guidance for action-looking comments on blocked tasks.
+
+    Comments are durable context, not executable dispatch requests. A comment
+    added after a task has blocked does not wake the assignee; only a new ready
+    task or an explicit unblock/re-dispatch enters the dispatcher queue. Keep
+    this helper small and heuristic: it is a safety warning, not a policy gate.
+    """
+    if not body or not _BLOCKED_COMMENT_ACTION_RE.search(body):
+        return None
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row and row["status"] == "blocked":
+        return BLOCKED_COMMENT_ACTION_WARNING
+    return None
+
+
 def _scan_prose_for_phantom_ids(
     conn: sqlite3.Connection,
     text: str,
