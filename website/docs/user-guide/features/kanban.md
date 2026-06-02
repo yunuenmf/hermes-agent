@@ -609,6 +609,22 @@ dashboard:
 
 Each key is optional and falls back to the shown default.
 
+### Internal profile communication
+
+Kanban is the durable work queue, not a chat transport. Do not create Kanban contact tasks merely to ask, notify, ping, or refine with another profile. Use direct/internal channels for discussion, then write Kanban comments or follow-up tasks only for durable outcomes: decisions, dependencies, blockers, evidence, review handoffs, or concrete work.
+
+Deterministic options:
+
+```bash
+# Direct profile runner path; starts the named profile without creating a Kanban row.
+hermes -p <profile> chat -q '<question or instruction>' --toolsets safe
+
+# Structured internal message path when a validated private room/channel exists.
+printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'
+```
+
+If a Matrix profile-room send is blocked, unvalidated, or unavailable, do not create a Kanban contact task as a workaround. Fall back to the direct profile runner path, or block only when a concrete human decision/action is required.
+
 ### Security model
 
 The dashboard's HTTP auth middleware [explicitly skips `/api/plugins/`](./extending-the-dashboard#backend-api-routes) — plugin routes are unauthenticated by design because the dashboard binds to localhost by default. That means the kanban REST surface is reachable from any process on the host.

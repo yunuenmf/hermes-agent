@@ -3473,8 +3473,10 @@ _BLOCKED_COMMENT_ACTION_RE = re.compile(
 
 BLOCKED_COMMENT_ACTION_WARNING = (
     "Comment recorded only: this task is blocked, so no worker will be "
-    "spawned or woken by this comment. To make an assignee act, send the "
-    "message yourself, create a new assigned contact task, or explicitly "
+    "spawned or woken by this comment. For peer discussion, send a direct "
+    "profile command or structured internal message yourself. Use Kanban "
+    "only for durable work/dependencies/outcomes: create a new assigned "
+    "work task when actual follow-up work is required, or explicitly "
     "unblock/re-dispatch the blocked task with the instruction."
 )
 

@@ -175,6 +175,12 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
 
+## Internal profile communication
+
+Profile-to-profile discussion should not be modeled as a Kanban contact task. If you need quick peer input and you have permission/tools, use a direct profile command such as `hermes -p <profile> chat -q '<question>' --toolsets safe`, or send a structured internal note with `send_message` / `hermes send` to a validated private profile room. Record the result on Kanban only when it becomes durable evidence, a dependency, a blocker, review feedback, or concrete follow-up work.
+
+If a Matrix/profile-room send is blocked or unvalidated, fall back to the direct profile runner path. Escalate to the human only when the question requires human action or a decision; otherwise do not create a Kanban task merely to ping another profile.
+
 ## Notification routing
 
 You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
@@ -187,6 +193,7 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
+- Create Kanban contact tasks merely to ask, notify, ping, or refine with another profile; use direct/internal messaging and record only durable outcomes.
 - Complete a task you didn't actually finish. Block it instead.
 
 ## Pitfalls
