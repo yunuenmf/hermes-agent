@@ -364,6 +364,21 @@ def _summary_to_json(summary: ProjectHealthSummary) -> str:
     return json.dumps(asdict(summary), indent=2, sort_keys=True)
 
 
+def _project_health_snapshot_from_dict(data: Mapping[str, Any]) -> ProjectHealthSnapshot:
+    kanban_data = dict(data["kanban"])
+    kanban_data["tasks"] = [KanbanTaskSnapshot(**task) for task in kanban_data.get("tasks", [])]
+
+    github_data = dict(data["github"])
+    github_data["open_prs"] = [PullRequestSnapshot(**pr) for pr in github_data.get("open_prs", [])]
+
+    return ProjectHealthSnapshot(
+        project_slug=str(data["project_slug"]),
+        kanban=KanbanSnapshot(**kanban_data),
+        matrix=MatrixSnapshot(**data["matrix"]),
+        github=GitHubSnapshot(**github_data),
+    )
+
+
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot-json", type=Path, help="Evaluate an injected ProjectHealthSnapshot JSON file")
@@ -371,12 +386,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if not args.snapshot_json:
         parser.error("--snapshot-json is required for deterministic CLI use")
     data = json.loads(args.snapshot_json.read_text(encoding="utf-8"))
-    snapshot = ProjectHealthSnapshot(
-        project_slug=data["project_slug"],
-        kanban=KanbanSnapshot(**data["kanban"]),
-        matrix=MatrixSnapshot(**data["matrix"]),
-        github=GitHubSnapshot(**data["github"]),
-    )
+    snapshot = _project_health_snapshot_from_dict(data)
     print(_summary_to_json(evaluate_project_health(snapshot)))
     return 0
 

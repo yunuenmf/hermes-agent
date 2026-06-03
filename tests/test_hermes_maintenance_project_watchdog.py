@@ -155,6 +155,45 @@ def test_project_health_summary_picks_most_severe_status_deterministically() -> 
     assert summary.findings == []
 
 
+def test_cli_snapshot_loader_rehydrates_nested_dataclasses(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "snapshot.json"
+    snapshot_path.write_text(
+        """
+        {
+          "project_slug": "hermes-maintenance",
+          "kanban": {
+            "db_readable": true,
+            "board_exists": true,
+            "board_slug": "hermes-maintenance",
+            "dispatch_owner": "coordinator_hermes_maintenance",
+            "tasks": [{"task_id": "t_waiting", "title": "dependency", "status": "todo", "updated_at": 100, "block_reason": null, "pr_refs": []}]
+          },
+          "matrix": {
+            "project_slug": "hermes-maintenance",
+            "coordinator_room_id": "!coord:matrix.example",
+            "project_room_id": "!project:matrix.example",
+            "gateway_route_registered": true,
+            "profile_route_registered": true,
+            "strict_validator_ok": true
+          },
+          "github": {
+            "repo_path": "/repo/hermes-agent",
+            "remote_url": "https://github.com/yunuenmf/hermes-agent.git",
+            "remote_reachable": true,
+            "auth_ok": true,
+            "branch_name": "downstream/watchdog-live-health-adapters",
+            "branch_upstream": "yunuenmf/feature/gateway-fragmentation-finalize-reset",
+            "worktree_clean": true,
+            "open_prs": [{"number": 7, "state": "open", "head_branch": "downstream/watchdog-live-health-adapters", "linked_task_ids": ["t_28a15448"]}],
+            "kanban_task_id": "t_28a15448"
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    assert project_watchdog.main(["--snapshot-json", str(snapshot_path)]) == 0
+
 
 def test_matrix_registry_adapter_uses_injected_registry_without_live_matrix() -> None:
     snapshot = project_watchdog.load_matrix_snapshot_from_registry(
