@@ -84,7 +84,6 @@ import threading
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -110,6 +109,130 @@ _IS_WINDOWS = sys.platform == "win32"
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+
+BOARD_OWNERSHIP_SCHEMA_VERSION = 1
+BOARD_OWNERSHIP_FIELDS = (
+    "coordinator_profile",
+    "dispatch_owner",
+    "watchdog_owner",
+    "matrix_space",
+    "matrix_room",
+    "pa_audit_owner",
+)
+BOARD_OWNER_PROFILE_FIELDS = (
+    "coordinator_profile",
+    "dispatch_owner",
+    "watchdog_owner",
+    "pa_audit_owner",
+)
+BOARD_MATRIX_FIELDS = ("matrix_space", "matrix_room")
+_PROFILE_VALUE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _empty_board_ownership() -> dict[str, Any]:
+    return {
+        "schema_version": BOARD_OWNERSHIP_SCHEMA_VERSION,
+        "coordinator_profile": None,
+        "dispatch_owner": None,
+        "watchdog_owner": None,
+        "matrix_space": None,
+        "matrix_room": None,
+        "pa_audit_owner": None,
+    }
+
+
+def validate_board_owner_profile(field: str, value: Any) -> Optional[str]:
+    """Validate a nullable owner/profile field used by board metadata."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string or null")
+    trimmed = value.strip()
+    if not trimmed or not _PROFILE_VALUE_RE.match(trimmed):
+        raise ValueError(
+            f"{field} must be a profile-like name using letters, numbers, '_' or '-'"
+        )
+    return trimmed
+
+
+def _validate_board_matrix_field(field: str, value: Any, *, reusable_template: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a string or null")
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+    if reusable_template and trimmed.startswith(("!", "#")):
+        raise ValueError(f"{field} must not hard-code a concrete Matrix ID in reusable templates")
+    return trimmed
+
+
+def validate_board_ownership(
+    ownership: Optional[dict[str, Any]] = None,
+    *,
+    reusable_template: bool = False,
+) -> dict[str, Any]:
+    """Return canonical nested board ownership metadata.
+
+    Concrete board metadata may include Matrix room/space IDs; reusable templates
+    must not bake those live IDs in. Unknown keys inside ``ownership`` are
+    intentionally not preserved because the nested object is a versioned schema.
+    Unknown top-level board metadata fields remain preserved by read/write.
+    """
+    if ownership is None:
+        ownership = {}
+    if not isinstance(ownership, dict):
+        raise ValueError("ownership must be an object")
+    canonical = _empty_board_ownership()
+    schema_version = ownership.get("schema_version", BOARD_OWNERSHIP_SCHEMA_VERSION)
+    if schema_version in (None, ""):
+        schema_version = BOARD_OWNERSHIP_SCHEMA_VERSION
+    try:
+        schema_version_int = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ownership.schema_version must be an integer") from exc
+    if schema_version_int != BOARD_OWNERSHIP_SCHEMA_VERSION:
+        raise ValueError(
+            f"ownership.schema_version must be {BOARD_OWNERSHIP_SCHEMA_VERSION}"
+        )
+    canonical["schema_version"] = schema_version_int
+    for field in BOARD_OWNER_PROFILE_FIELDS:
+        canonical[field] = validate_board_owner_profile(field, ownership.get(field))
+    for field in BOARD_MATRIX_FIELDS:
+        canonical[field] = _validate_board_matrix_field(
+            field,
+            ownership.get(field),
+            reusable_template=reusable_template,
+        )
+    return canonical
+
+
+def _canonical_board_ownership_from_metadata(
+    meta: dict[str, Any],
+    *,
+    reusable_template: bool = False,
+) -> dict[str, Any]:
+    legacy = {field: meta.get(field) for field in BOARD_OWNERSHIP_FIELDS if field in meta}
+    nested = meta.get("ownership")
+    if nested is None:
+        nested_values: dict[str, Any] = {}
+    elif isinstance(nested, dict):
+        nested_values = dict(nested)
+    else:
+        raise ValueError("ownership must be an object")
+    merged = {**legacy, **nested_values}
+    return validate_board_ownership(merged, reusable_template=reusable_template)
+
+# If a worker's PID is still alive but its ``last_heartbeat_at`` is
+# older than this when ``release_stale_claims`` runs, treat the worker
+# as wedged and reclaim regardless of PID liveness (#29747 gap 3).
+# This catches the logic-loop case where the process is technically
+# running but not making observable progress.  ``_touch_activity``
+# bridges chunk-level liveness into ``last_heartbeat_at`` via #31752,
+# so any genuinely active worker keeps its heartbeat fresh as a side
+# effect of normal API traffic.
+DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -454,6 +577,10 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    try:
+        meta["ownership"] = _canonical_board_ownership_from_metadata(meta)
+    except ValueError:
+        meta["ownership"] = _empty_board_ownership()
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -467,6 +594,14 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    ownership: Optional[dict[str, Any]] = None,
+    coordinator_profile: Optional[str] = None,
+    dispatch_owner: Optional[str] = None,
+    watchdog_owner: Optional[str] = None,
+    matrix_space: Optional[str] = None,
+    matrix_room: Optional[str] = None,
+    pa_audit_owner: Optional[str] = None,
+    reusable_template: bool = False,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -490,6 +625,32 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    updates = {
+        "coordinator_profile": coordinator_profile,
+        "dispatch_owner": dispatch_owner,
+        "watchdog_owner": watchdog_owner,
+        "matrix_space": matrix_space,
+        "matrix_room": matrix_room,
+        "pa_audit_owner": pa_audit_owner,
+    }
+    if ownership is not None or any(value is not None for value in updates.values()):
+        current_ownership = dict(meta.get("ownership") or {})
+        if ownership is not None:
+            if not isinstance(ownership, dict):
+                raise ValueError("ownership must be an object")
+            current_ownership.update(ownership)
+        current_ownership.update({k: v for k, v in updates.items() if v is not None})
+        meta["ownership"] = validate_board_ownership(
+            current_ownership,
+            reusable_template=reusable_template,
+        )
+    else:
+        meta["ownership"] = validate_board_ownership(
+            meta.get("ownership"),
+            reusable_template=reusable_template,
+        )
+    for legacy_key in BOARD_OWNERSHIP_FIELDS:
+        meta.pop(legacy_key, None)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -510,6 +671,14 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    ownership: Optional[dict[str, Any]] = None,
+    coordinator_profile: Optional[str] = None,
+    dispatch_owner: Optional[str] = None,
+    watchdog_owner: Optional[str] = None,
+    matrix_space: Optional[str] = None,
+    matrix_room: Optional[str] = None,
+    pa_audit_owner: Optional[str] = None,
+    reusable_template: bool = False,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -527,6 +696,14 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        ownership=ownership,
+        coordinator_profile=coordinator_profile,
+        dispatch_owner=dispatch_owner,
+        watchdog_owner=watchdog_owner,
+        matrix_space=matrix_space,
+        matrix_room=matrix_room,
+        pa_audit_owner=pa_audit_owner,
+        reusable_template=reusable_template,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -575,6 +752,67 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
             entries.append(meta)
             seen.add(normed)
     return entries
+
+
+def _normalize_dispatch_profile(profile: Optional[str]) -> str:
+    val = str(profile or "").strip()
+    return val or "default"
+
+
+def board_dispatch_skip_reason(meta: dict, active_profile: Optional[str]) -> Optional[str]:
+    """Return why ``active_profile`` must not dispatch ``meta``, or None.
+
+    Project boards are dispatchable only when ownership.dispatch_owner exactly
+    matches the active gateway profile. The legacy default board is the one
+    safe exception: if it has no explicit dispatch owner, only the default/admin
+    gateway may dispatch it so project coordinator gateways do not fight over
+    admin work.
+    """
+    profile = _normalize_dispatch_profile(active_profile)
+    slug = str(meta.get("slug") or DEFAULT_BOARD)
+    raw_ownership = meta.get("ownership")
+    ownership: dict[str, Any] = raw_ownership if isinstance(raw_ownership, dict) else {}
+    dispatch_owner = str(ownership.get("dispatch_owner") or "").strip()
+    if dispatch_owner:
+        if dispatch_owner == profile:
+            return None
+        return f"dispatch_owner={dispatch_owner!r} does not match active profile {profile!r}"
+    if slug == DEFAULT_BOARD:
+        if profile in {"default", "admin"}:
+            return None
+        return "legacy default board has no dispatch_owner and active profile is not default/admin"
+    return "missing ownership.dispatch_owner"
+
+
+def dispatchable_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[dict]:
+    """Return boards this gateway profile is allowed to dispatch.
+
+    Notifier subscriptions are intentionally not considered here: this helper
+    is for dispatcher/auto-decomposer ownership only.
+    """
+    boards = list_boards(include_archived=include_archived)
+    return [
+        board for board in boards
+        if board_dispatch_skip_reason(board, active_profile) is None
+    ]
+
+
+def skipped_dispatch_boards_for_profile(
+    active_profile: Optional[str],
+    *,
+    include_archived: bool = False,
+) -> list[tuple[dict, str]]:
+    """Return ``(board, reason)`` pairs skipped by dispatcher ownership."""
+    skipped: list[tuple[dict, str]] = []
+    for board in list_boards(include_archived=include_archived):
+        reason = board_dispatch_skip_reason(board, active_profile)
+        if reason is not None:
+            skipped.append((board, reason))
+    return skipped
 
 
 def remove_board(slug: str, *, archive: bool = True) -> dict:
@@ -2741,9 +2979,19 @@ def release_stale_claims(
     then-immediately-reclaim loop seen on slow models that spend longer
     than ``DEFAULT_CLAIM_TTL_SECONDS`` inside a single tool-free LLM
     call (#23025): no tool calls means no ``kanban_heartbeat``, even
-    though the subprocess is healthy. ``enforce_max_runtime`` and
-    ``detect_crashed_workers`` remain the upper bounds for genuinely
-    wedged or dead workers.
+    though the subprocess is healthy.
+
+    Backstop (#29747 gap 3): if the worker's PID is still alive but its
+    ``last_heartbeat_at`` is stale by more than
+    ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` (1h), the worker has
+    been making no observable progress and we reclaim anyway — even if
+    ``_pid_alive`` is still true. This catches the wedged-in-a-logic-loop
+    case where the process is technically running but accomplishing
+    nothing. ``_touch_activity`` (run_agent.py) bridges chunk-level
+    liveness into ``last_heartbeat_at`` via #31752, so any genuinely
+    active worker keeps its heartbeat fresh as a side effect of normal
+    API traffic. ``enforce_max_runtime`` and ``detect_crashed_workers``
+    remain the upper bounds for genuinely wedged or dead workers.
 
     Returns the number of stale claims actually reclaimed (live-pid
     extensions don't count). Safe to call often.
@@ -2761,7 +3009,21 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]):
+        hb = row["last_heartbeat_at"]
+        # Heartbeat staleness backstop: if we have a heartbeat at all
+        # and it's older than the max-stale threshold, the worker is
+        # not making observable progress.  Reclaim instead of extending,
+        # even if the PID is still alive (it's likely in a logic loop).
+        heartbeat_stale = (
+            hb is not None
+            and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        )
+        if (
+            host_local
+            and row["worker_pid"]
+            and _pid_alive(row["worker_pid"])
+            and not heartbeat_stale
+        ):
             new_expires = now + _resolve_claim_ttl_seconds()
             with write_txn(conn):
                 cur = conn.execute(
@@ -2830,6 +3092,7 @@ def release_stale_claims(
                 ),
                 "now": now,
                 "host_local": host_local,
+                "heartbeat_stale": bool(heartbeat_stale),
             }
             payload.update(termination)
             _append_event(
@@ -4289,6 +4552,12 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
+    auto_assigned_default: list[str] = field(default_factory=list)
+    """Task ids that were unassigned in the DB and had
+    ``kanban.default_assignee`` applied this tick before spawning (#27145).
+    Surfaces the auto-assignment to telemetry / CLI / dashboard so the
+    operator can see when the dispatcher is acting on the fallback rule
+    rather than on explicit per-task assignments."""
     skipped_nonspawnable: list[str] = field(default_factory=list)
     """Ready task ids skipped because their assignee names a control-plane
     lane (a Claude Code terminal like ``orion-cc``) rather than a Hermes
@@ -4296,6 +4565,14 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    """Tasks deferred this tick because their assignee is already at
+    ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
+    ``(task_id, assignee, current_running_count)``. NOT an
+    operator-actionable failure — the task will be picked up on a
+    subsequent tick when the assignee has capacity. Separate bucket so
+    telemetry / dashboards can show "this profile is busy" vs
+    "task is genuinely stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -4729,7 +5006,6 @@ def detect_stale_running(
     if stale_timeout_seconds <= 0:
         return []
 
-    import signal as _signal_mod
 
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -4816,21 +5092,6 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
-
-
-def set_max_runtime(
-    conn: sqlite3.Connection,
-    task_id: str,
-    seconds: Optional[int],
-) -> bool:
-    """Set or clear the per-task max_runtime_seconds. Returns True on
-    success."""
-    with write_txn(conn):
-        cur = conn.execute(
-            "UPDATE tasks SET max_runtime_seconds = ? WHERE id = ?",
-            (int(seconds) if seconds is not None else None, task_id),
-        )
-    return cur.rowcount == 1
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -5231,8 +5492,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) after at least one prior
+        worker run exists for the task.  A prior worker already opened a PR;
+        re-spawning risks a duplicate PR on the same task. Fresh tasks with
+        no runs are not guarded by comment PR URLs alone.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -5263,6 +5526,15 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # Fresh tasks with no worker run can legitimately mention related PRs in
+    # coordinator/reporting comments; do not let those comments suppress the
+    # first worker spawn.
+    if not conn.execute(
+        "SELECT id FROM task_runs WHERE task_id = ? LIMIT 1",
+        (task_id,),
+    ).fetchone():
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
@@ -5342,6 +5614,8 @@ def dispatch_once(
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
+    default_assignee: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -5427,12 +5701,89 @@ def dispatch_once(
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
+    # Per-profile concurrency cap (#21582): when set, track how many
+    # workers each assignee already has in flight, and refuse to spawn
+    # when this would push that assignee past the cap. Prevents
+    # fan-out workloads from melting a single profile's local model /
+    # API quota / browser pool while leaving other profiles idle.
+    # Tasks blocked this way go to skipped_per_profile_capped (not
+    # skipped_unassigned — the operator-actionable signal is different:
+    # "this profile is busy, try again later" not "this needs routing").
+    _per_profile_cap = max_in_progress_per_profile if (
+        isinstance(max_in_progress_per_profile, int)
+        and max_in_progress_per_profile > 0
+    ) else None
+    _per_profile_running: dict[str, int] = {}
+    if _per_profile_cap is not None:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ):
+            _per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Normalize default_assignee once: empty/whitespace string → None so the
+    # rest of the loop can use ``if default_assignee:`` as a single check.
+    # We also resolve profile_exists once here for the same reason.
+    _default_assignee = (default_assignee or "").strip() or None
+    _default_assignee_resolved = False
+    if _default_assignee:
+        try:
+            from hermes_cli.profiles import profile_exists as _pe
+            _default_assignee_resolved = bool(_pe(_default_assignee))
+        except Exception:
+            # Profiles module not importable (test stubs, exotic envs).
+            # Trust the operator's config and try the assignment; the
+            # downstream profile_exists check on the assigned row will
+            # bucket it as nonspawnable if the profile genuinely isn't
+            # there, with the existing diagnostic.
+            _default_assignee_resolved = True
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
-        if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
+        row_assignee = row["assignee"]
+        if not row_assignee:
+            # Honour kanban.default_assignee: when the dispatcher hits an
+            # unassigned ready task and an operator-configured fallback
+            # exists, persist the assignment and proceed. This removes the
+            # dashboard footgun where a task created without an assignee
+            # parks in 'ready' forever even though the operator's intent
+            # ("default") was perfectly clear (#27145). Mutating the row
+            # (not just the in-memory view) keeps diagnostics and the
+            # board state consistent: the task is now legitimately owned
+            # by ``kanban.default_assignee``, not "unassigned but secretly
+            # routed".
+            if _default_assignee and _default_assignee_resolved:
+                # Dry-run: show what WOULD happen (auto-assign + spawn) without
+                # mutating the DB. Real run: mutate the row + emit the
+                # 'assigned' event so the board state matches what just happened.
+                if not dry_run:
+                    try:
+                        with write_txn(conn):
+                            conn.execute(
+                                "UPDATE tasks SET assignee = ? WHERE id = ? "
+                                "AND (assignee IS NULL OR assignee = '')",
+                                (_default_assignee, row["id"]),
+                            )
+                            _append_event(
+                                conn, row["id"], "assigned",
+                                {
+                                    "assignee": _default_assignee,
+                                    "source": "kanban.default_assignee",
+                                },
+                            )
+                    except Exception:
+                        _log.debug(
+                            "kanban dispatch: failed to apply default_assignee=%r "
+                            "to task %s",
+                            _default_assignee, row["id"], exc_info=True,
+                        )
+                        result.skipped_unassigned.append(row["id"])
+                        continue
+                row_assignee = _default_assignee
+                result.auto_assigned_default.append(row["id"])
+            else:
+                result.skipped_unassigned.append(row["id"])
+                continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
         # with "Profile 'X' does not exist" when the assignee names a
@@ -5447,7 +5798,7 @@ def dispatch_once(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if profile_exists is not None and not profile_exists(row_assignee):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -5456,6 +5807,19 @@ def dispatch_once(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Per-profile concurrency cap (#21582): even if there's global
+        # headroom, refuse to spawn for an assignee that's already at
+        # its in-flight cap. Prevents one profile's local model / API
+        # quota / browser pool from being overwhelmed by a fan-out
+        # while the global max_in_progress / max_spawn caps still allow
+        # work on OTHER profiles.
+        if _per_profile_cap is not None:
+            current = _per_profile_running.get(row_assignee, 0)
+            if current >= _per_profile_cap:
+                result.skipped_per_profile_capped.append(
+                    (row["id"], row_assignee, current)
+                )
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -5478,7 +5842,15 @@ def dispatch_once(
                     )
             continue
         if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
+            result.spawned.append((row["id"], row_assignee, ""))
+            # Increment per-profile counter even in dry_run so the cap
+            # check sees the would-be spawn on subsequent iterations.
+            # Without this, dry_run reports every task as spawnable and
+            # under-reports the capped subset (#21582).
+            if _per_profile_cap is not None and row_assignee:
+                _per_profile_running[row_assignee] = (
+                    _per_profile_running.get(row_assignee, 0) + 1
+                )
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -5521,6 +5893,13 @@ def dispatch_once(
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
+            # Track the new in-flight count for this profile so later
+            # iterations in this same tick respect the per-profile cap
+            # (#21582). Subsequent ticks re-query from the DB.
+            if _per_profile_cap is not None and claimed.assignee:
+                _per_profile_running[claimed.assignee] = (
+                    _per_profile_running.get(claimed.assignee, 0) + 1
+                )
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
@@ -6362,7 +6741,7 @@ def _to_epoch(val) -> Optional[int]:
         pass
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
-        from datetime import datetime, timezone
+        from datetime import datetime
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         return int(dt.timestamp())
     except (ValueError, OSError):
@@ -6809,16 +7188,6 @@ def list_runs(
 def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:
     row = conn.execute(
         "SELECT * FROM task_runs WHERE id = ?", (int(run_id),),
-    ).fetchone()
-    return Run.from_row(row) if row else None
-
-
-def active_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
-    """Return the currently-open run for ``task_id`` (``ended_at IS NULL``)."""
-    row = conn.execute(
-        "SELECT * FROM task_runs WHERE task_id = ? AND ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 1",
-        (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
 

@@ -25,24 +25,17 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
-import threading
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout
-from agent.message_sanitization import (
-    _repair_tool_call_arguments,
-    _sanitize_surrogates,
-)
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
-from agent.error_classifier import classify_api_error, FailoverReason
+from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -1666,20 +1659,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             old_text=function_args.get("old_text"),
             store=agent._memory_store,
         )
-        # Bridge: notify external memory provider of built-in memory writes
-        if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
-            try:
-                agent._memory_manager.on_memory_write(
-                    function_args.get("action", ""),
-                    target,
-                    function_args.get("content", ""),
-                    metadata=agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=tool_call_id,
-                    ),
-                )
-            except Exception:
-                pass
+        # Bridge successful writes and capacity-fallback attempts to external
+        # memory providers without mutating the flat-memory prompt snapshot.
+        from agent.memory_write_bridge import notify_external_memory_write
+        notify_external_memory_write(
+            agent,
+            function_args,
+            result,
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+        )
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         return agent._memory_manager.handle_tool_call(function_name, function_args)
@@ -1699,6 +1688,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             session_id=agent.session_id or "",
             enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
             skip_pre_tool_call_hook=True,
+            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
         )
 
 
