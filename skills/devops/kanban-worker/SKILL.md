@@ -13,6 +13,16 @@ metadata:
 
 > You're seeing this skill because the Hermes Kanban dispatcher spawned you as a worker with `--skills kanban-worker` — it's loaded automatically for every dispatched worker. The **lifecycle** (6 steps: orient → work → heartbeat → block/complete) also lives in the `KANBAN_GUIDANCE` block that's auto-injected into your system prompt. This skill is the deeper detail: good handoff shapes, retry diagnostics, edge cases.
 
+## Tool-output hygiene
+
+Kanban evidence is durable in SQLite, comments, events, and run history; agent context is not the place to repeatedly dump all of it. Prefer compact views first:
+
+- `kanban_show` tool defaults to a bounded compact response. Use it for orientation and status checks. Pass `include_full=true` only when you truly need complete old comments/events/runs/body text.
+- Human CLI keeps full `hermes kanban show <id>` behavior by default. Use `hermes kanban show <id> --brief` for gateway/agent-facing status summaries or when pasting output into another agent.
+- Avoid repeated full task dumps in comments, Matrix messages, and handoffs. Record durable evidence once (PR URL, changed files, tests, artifact paths) and reference the task/PR afterward.
+- Expand only the slice you need: latest summary/metadata, blocker reason, parent/child IDs, or recent comments/events/runs.
+
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:

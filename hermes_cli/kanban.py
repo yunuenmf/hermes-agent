@@ -81,6 +81,15 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
     }
 
 
+def _clip(value: Any, limit: int = 500) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
 def _run_state_kwargs(args: argparse.Namespace) -> Optional[dict[str, str]]:
     st = getattr(args, "state_type", None)
     sn = getattr(args, "state_name", None)
@@ -408,6 +417,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_show = sub.add_parser("show", help="Show a task with comments + events")
     p_show.add_argument("task_id")
     p_show.add_argument("--json", action="store_true")
+    p_show.add_argument(
+        "--brief",
+        action="store_true",
+        help=(
+            "Emit a compact summary for agent/gateway contexts: metadata, "
+            "latest summary, and bounded recent comments/events/runs. Default "
+            "show output remains full for human operators."
+        ),
+    )
     p_show.add_argument(
         "--state-type",
         choices=("status", "outcome"),
@@ -1425,6 +1443,79 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+
+    if getattr(args, "brief", False):
+        recent_comments = comments[-3:]
+        recent_events = events[-10:]
+        recent_runs = runs[-5:]
+        latest_run = runs[-1] if runs else None
+        payload = {
+            "task": {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status,
+                "assignee": task.assignee,
+                "priority": task.priority,
+                "tenant": task.tenant,
+                "workspace_kind": task.workspace_kind,
+                "workspace_path": task.workspace_path,
+                "branch_name": task.branch_name,
+                "created_at": task.created_at,
+                "started_at": task.started_at,
+                "completed_at": task.completed_at,
+                "body_preview": _clip(task.body, 1000),
+                "body_truncated": bool(task.body and len(task.body) > 1000),
+            },
+            "latest_summary": _clip(latest_summary, 1000),
+            "latest_metadata": latest_run.metadata if latest_run else None,
+            "parents": parents,
+            "children": children,
+            "comments_count": len(comments),
+            "comments": [
+                {"author": c.author, "body": _clip(c.body), "created_at": c.created_at}
+                for c in recent_comments
+            ],
+            "events_count": len(events),
+            "events": [
+                {"kind": e.kind, "payload": e.payload, "created_at": e.created_at, "run_id": e.run_id}
+                for e in recent_events
+            ],
+            "runs_count": len(runs),
+            "runs": [
+                {
+                    "id": r.id,
+                    "profile": r.profile,
+                    "step_key": r.step_key,
+                    "status": r.status,
+                    "outcome": r.outcome,
+                    "summary": _clip(r.summary),
+                    "error": _clip(r.error),
+                    "started_at": r.started_at,
+                    "ended_at": r.ended_at,
+                }
+                for r in recent_runs
+            ],
+            "compact": True,
+            "full_hint": "Run `hermes kanban show <task_id>` without --brief for full human output.",
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print(f"Task {task.id}: {task.title}")
+            print(f"  status:   {task.status}")
+            print(f"  assignee: {task.assignee or '-'}")
+            if parents:
+                print(f"  parents:  {', '.join(parents)}")
+            if children:
+                print(f"  children: {', '.join(children)}")
+            if latest_summary:
+                print("  latest:  " + _clip(latest_summary.replace("\n", " "), 200))
+            print(
+                f"  counts:   comments={len(comments)} events={len(events)} runs={len(runs)} "
+                "(showing latest 3/10/5)"
+            )
+            print("  full:     hermes kanban show " + task.id)
+        return 0
 
     if getattr(args, "json", False):
         payload = {

@@ -182,6 +182,55 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_compact_default_bounds_large_fields(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("BODY-" + ("x" * 6000), worker_env),
+        )
+        for i in range(8):
+            kb.add_comment(conn, worker_env, "tester", f"comment-{i}-" + ("y" * 800))
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    compact = json.loads(kt._handle_show({}))
+    assert compact["compact"] is True
+    assert compact["full_available"] is True
+    assert compact["task"]["body_truncated"] is True
+    assert len(compact["task"]["body"]) < 4100
+    assert compact["comments_count"] == 8
+    assert compact["comments_limit"] == 3
+    assert compact["comments_truncated"] is True
+    assert [c["body"].split("-")[1] for c in compact["comments"]] == ["5", "6", "7"]
+    assert compact["events_limit"] == 10
+    assert "full_hint" in compact
+
+
+def test_show_include_full_preserves_legacy_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("BODY-" + ("x" * 6000), worker_env),
+        )
+        for i in range(4):
+            kb.add_comment(conn, worker_env, "tester", f"comment-{i}")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    full = json.loads(kt._handle_show({"include_full": True}))
+    assert full["compact"] is False
+    assert full["task"]["body_truncated"] is False
+    assert len(full["task"]["body"]) > 6000
+    assert len(full["comments"]) == 4
+    assert "worker_context" in full
+
+
 def test_show_explicit_task_id(worker_env):
     """Peek at a different task than the one in env."""
     from hermes_cli import kanban_db as kb
