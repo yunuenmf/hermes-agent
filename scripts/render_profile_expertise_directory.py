@@ -19,7 +19,7 @@ DEFAULT_SOURCE = Path("docs/hermes-maintenance/profile-expertise-directory.yaml"
 
 def load_directory(path: Path) -> dict[str, Any]:
     """Load and lightly validate a profile expertise directory YAML file."""
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path} did not contain a YAML mapping")
     profiles = data.get("profiles")
@@ -109,7 +109,7 @@ def main() -> int:
     data = load_directory(args.source)
     rendered = render_markdown(data)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(rendered + "\n")
+    args.output.write_text(rendered + "\n", encoding="utf-8")
     print(f"rendered {args.output} from {args.source}")
     return 0
 
