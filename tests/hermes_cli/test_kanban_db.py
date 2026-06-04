@@ -211,6 +211,102 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_events_run" in indexes
 
 
+
+
+# ---------------------------------------------------------------------------
+# Canonical status migration backup / dry-run / rollback proof
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_status_migration_dry_run_reports_aliases_parent_gates_and_no_mutation(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="open parent", assignee="alice")
+        child = kb.create_task(conn, title="racy child", assignee="bob", parents=[parent])
+        blocked = kb.create_task(conn, title="human blocker", assignee="carol")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (blocked,))
+        before = {row["id"]: row["status"] for row in conn.execute("SELECT id, status FROM tasks")}
+
+    report = kb.canonical_status_migration_dry_run(kanban_home / "kanban.db")
+
+    with kb.connect() as conn:
+        after = {row["id"]: row["status"] for row in conn.execute("SELECT id, status FROM tasks")}
+
+    assert after == before
+    assert report["no_live_mutation"] is True
+    assert report["legacy_storage_alias_count"] >= 2
+    assert report["parent_gated_waiting_count"] == 1
+    assert report["blocked_human_audit_count"] == 1
+    child_report = next(item for item in report["tasks"] if item["task_id"] == child)
+    assert child_report["storage_status"] == "ready"
+    assert child_report["proposed_canonical_status"] == "waiting"
+    assert child_report["parent_gated_waiting"] is True
+    assert child_report["would_change"] is True
+    blocked_report = next(item for item in report["tasks"] if item["task_id"] == blocked)
+    assert blocked_report["proposed_canonical_status"] == "blocked"
+    assert blocked_report["blocker_human_audit"].startswith("requires-review")
+
+
+def test_kanban_backup_and_rollback_proof_are_deterministic_fixture_artifacts(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        kb.create_task(conn, title="child", assignee="bob", parents=[parent])
+
+    backup_dir = tmp_path / "backups"
+    metadata = kb.create_kanban_backup(
+        kanban_home / "kanban.db",
+        output_dir=backup_dir,
+        timestamp="20260604T000000Z",
+    )
+
+    backup_path = Path(metadata["backup_path"])
+    metadata_path = Path(metadata["metadata_path"])
+    assert backup_path == backup_dir / "kanban-20260604T000000Z.sqlite3"
+    assert metadata_path == backup_dir / "kanban-20260604T000000Z.metadata.json"
+    assert backup_path.exists()
+    assert metadata_path.exists()
+    assert metadata["backup_sha256"]
+    assert metadata["table_counts"]["tasks"] == 2
+    assert "restore_instructions" in metadata
+    assert "schema_sha256" in metadata["schema"]
+
+    proof = kb.verify_kanban_backup_restore(backup_path, temp_dir=tmp_path / "restore")
+
+    assert proof["ok"] is True
+    assert Path(proof["restored_path"]).exists()
+    assert proof["backup_sha256"] == metadata["backup_sha256"]
+    assert proof["backup_sha256"] == proof["restored_sha256"]
+    assert proof["source_table_counts"] == proof["restored_table_counts"]
+    assert proof["source_task_status_distribution"] == proof["restored_task_status_distribution"]
+    assert proof["source_integrity_check"] == ["ok"]
+    assert proof["restored_integrity_check"] == ["ok"]
+
+
+def test_all_boards_backup_covers_every_project_without_autocreating_missing_dbs(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="default task", assignee="alice")
+    kb.create_board("project-a", name="Project A")
+    with kb.connect(board="project-a") as conn:
+        kb.create_task(conn, title="project task", assignee="bob")
+    kb.write_board_metadata("metadata-only", name="Metadata Only")
+
+    result = kb.create_all_kanban_backups(
+        output_dir=tmp_path / "all-project-backups",
+        timestamp="20260604T010203Z",
+    )
+
+    assert result["artifact_type"] == "hermes-kanban-all-boards-backup"
+    assert result["board_count"] == 2
+    assert {item["board"] for item in result["backups"]} == {"default", "project-a"}
+    assert {item["board"] for item in result["skipped"]} == {"metadata-only"}
+    for item in result["backups"]:
+        assert Path(item["backup_path"]).exists()
+        assert Path(item["metadata_path"]).exists()
+        assert Path(item["backup_path"]).parent == tmp_path / "all-project-backups" / item["board"]
+        proof = kb.verify_kanban_backup_restore(item["backup_path"], temp_dir=tmp_path / f"restore-{item['board']}")
+        assert proof["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
