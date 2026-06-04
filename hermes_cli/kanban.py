@@ -386,6 +386,33 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")
 
+
+    # --- canonical migration safety (downstream-only dry-run/rollback gate) ---
+    p_cbackup = sub.add_parser(
+        "canonical-backup",
+        help="Create a no-mutation Kanban DB backup artifact for canonical status migration",
+    )
+    p_cbackup.add_argument("--db", default=None, help="Explicit kanban.db path (defaults to selected board)")
+    p_cbackup.add_argument("--output-dir", default=None, help="Directory for backup + metadata artifacts")
+    p_cbackup.add_argument("--timestamp", default=None, help="UTC timestamp for deterministic artifact names (tests/automation)")
+    p_cbackup.add_argument("--json", action="store_true")
+
+    p_cdry = sub.add_parser(
+        "canonical-dry-run",
+        help="Report canonical status backfill changes without mutating the Kanban DB",
+    )
+    p_cdry.add_argument("--db", default=None, help="Explicit kanban.db path (defaults to selected board)")
+    p_cdry.add_argument("--output", default=None, help="Optional JSON report path")
+    p_cdry.add_argument("--json", action="store_true")
+
+    p_cproof = sub.add_parser(
+        "canonical-rollback-proof",
+        help="Restore a backup into a temp DB and verify rollback integrity evidence",
+    )
+    p_cproof.add_argument("backup_path")
+    p_cproof.add_argument("--temp-dir", default=None, help="Directory for restored temp DB proof")
+    p_cproof.add_argument("--json", action="store_true")
+
     # --- list ---
     p_list = sub.add_parser("list", aliases=["ls"], help="List tasks")
     p_list.add_argument("--mine", action="store_true",
@@ -918,19 +945,21 @@ def kanban_command(args: argparse.Namespace) -> int:
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
 
-    # Auto-initialize the DB before dispatching any subcommand. init_db
-    # is idempotent, so running it every invocation is cheap (one
-    # SELECT against sqlite_master when tables already exist) and
-    # prevents "no such table: tasks" on first use from a fresh
-    # HERMES_HOME. Previously only `init` and `daemon` triggered
-    # schema creation; `create` / `list` / every other command would
-    # error out on a fresh install.
-    try:
-        kb.init_db()
-    except Exception as exc:
-        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
+    # Auto-initialize the DB before dispatching mutating/standard subcommands.
+    # The canonical migration safety commands are deliberately read-only and
+    # must not create or migrate a live DB before backup/dry-run evidence.
+    readonly_no_init_actions = {
+        "canonical-backup",
+        "canonical-dry-run",
+        "canonical-rollback-proof",
+    }
+    if action not in readonly_no_init_actions:
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            _restore_board_env()
+            return 1
 
     handlers = {
         "init":     _cmd_init,
@@ -939,6 +968,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "canonical-backup": _cmd_canonical_backup,
+        "canonical-dry-run": _cmd_canonical_dry_run,
+        "canonical-rollback-proof": _cmd_canonical_rollback_proof,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1002,6 +1034,78 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+
+
+
+def _print_json_or_summary(payload: dict[str, Any], *, json_output: bool, summary_lines: list[str]) -> int:
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        for line in summary_lines:
+            print(line)
+    return 0
+
+
+def _cmd_canonical_backup(args: argparse.Namespace) -> int:
+    result = kb.create_kanban_backup(
+        args.db,
+        output_dir=getattr(args, "output_dir", None),
+        timestamp=getattr(args, "timestamp", None),
+        board=getattr(args, "board", None),
+    )
+    return _print_json_or_summary(
+        result,
+        json_output=bool(getattr(args, "json", False)),
+        summary_lines=[
+            "Canonical status migration backup created (no live DB mutation).",
+            f"  Backup:   {result['backup_path']}",
+            f"  Metadata: {result['metadata_path']}",
+            f"  SHA256:   {result['backup_sha256']}",
+            f"  Counts:   {result['table_counts']}",
+            "  Restore:  see restore_instructions in metadata JSON",
+        ],
+    )
+
+
+def _cmd_canonical_dry_run(args: argparse.Namespace) -> int:
+    result = kb.canonical_status_migration_dry_run(
+        args.db,
+        board=getattr(args, "board", None),
+    )
+    output = getattr(args, "output", None)
+    if output:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        Path(output).write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    lines = [
+        "Canonical status migration dry-run complete (no live DB mutation).",
+        f"  Source DB:              {result['source_db_path']}",
+        f"  Tasks scanned:          {result['task_count']}",
+        f"  Legacy aliases:         {result['legacy_storage_alias_count']}",
+        f"  Parent-gated waiting:   {result['parent_gated_waiting_count']}",
+        f"  Rows that would change: {result['would_change_count']}",
+        f"  Blocked human audits:   {result['blocked_human_audit_count']}",
+    ]
+    if output:
+        lines.append(f"  Report:                 {output}")
+    return _print_json_or_summary(result, json_output=bool(getattr(args, "json", False)), summary_lines=lines)
+
+
+def _cmd_canonical_rollback_proof(args: argparse.Namespace) -> int:
+    result = kb.verify_kanban_backup_restore(
+        args.backup_path,
+        temp_dir=getattr(args, "temp_dir", None),
+    )
+    lines = [
+        "Canonical status migration rollback proof complete.",
+        f"  OK:       {result['ok']}",
+        f"  Backup:   {result['backup_path']}",
+        f"  Restored: {result['restored_path']}",
+        f"  SHA256:   {result['backup_sha256']}",
+        f"  Counts:   {result['restored_table_counts']}",
+    ]
+    _print_json_or_summary(result, json_output=bool(getattr(args, "json", False)), summary_lines=lines)
+    return 0 if result.get("ok") else 1
 
 
 # ---------------------------------------------------------------------------

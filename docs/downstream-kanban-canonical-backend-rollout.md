@@ -53,3 +53,42 @@ This branch implements only a non-invasive compatibility/projection slice:
 - Tests cover the observed parent-gated child regression without mutating live DB schema or live board data.
 
 This is intentionally not the full backend redesign. It creates the adapter seam and acceptance fixture needed before the backup/dry-run/backfill slice.
+
+
+## Backup / dry-run / rollback gate slice
+
+Before any live Kanban DB mutation for canonical status backfill, run the downstream-only safety gate below. These commands are read-only with respect to task rows and schema: they intentionally skip the normal Kanban CLI auto-init/migration path so backup and dry-run evidence can be produced before touching a live board.
+
+1. Create a deterministic SQLite backup artifact:
+
+   ```bash
+   hermes kanban --board <board-slug> canonical-backup --output-dir <artifact-dir>
+   ```
+
+   The command writes `kanban-<UTC timestamp>.sqlite3` plus `kanban-<UTC timestamp>.metadata.json`. The metadata includes the source DB path, backup path, SHA-256 checksum, artifact size, SQLite/schema metadata, table counts, task status distribution, and restore instructions. Automation/tests may pass `--timestamp YYYYMMDDTHHMMSSZ` for deterministic artifact names.
+
+2. Produce a no-mutation canonical status dry-run report:
+
+   ```bash
+   hermes kanban --board <board-slug> canonical-dry-run --output <artifact-dir>/canonical-dry-run.json
+   ```
+
+   The report lists every task row with its legacy storage status, proposed canonical status, proposed compatibility runtime state, reason, and `would_change` flag. It separately summarizes legacy storage aliases, parent-gated descendants that must canonicalize to `waiting`, rows that would change in a future live migration, and `blocked` rows requiring human-only blocker audit. A blocked parent does not make descendants blocked; descendants remain canonical `waiting` unless the descendant itself needs human action.
+
+3. Prove rollback mechanically before live mutation:
+
+   ```bash
+   hermes kanban canonical-rollback-proof <artifact-dir>/kanban-<UTC timestamp>.sqlite3 --temp-dir <artifact-dir>/restore-proof
+   ```
+
+   The proof restores the backup into a temporary DB and verifies SHA-256 equality, `PRAGMA integrity_check`, table counts, task status distribution, and schema checksum. The command exits non-zero if any rollback evidence fails.
+
+4. Restore procedure if rollback is required:
+
+   - Stop all Kanban dispatchers/gateways that might write to the target DB.
+   - Verify the backup file checksum matches `backup_sha256` in the metadata JSON.
+   - Preserve an emergency copy of the current target `kanban.db`.
+   - Copy the selected `kanban-<UTC timestamp>.sqlite3` over the target `kanban.db`.
+   - Run SQLite `PRAGMA integrity_check` (or rerun `canonical-rollback-proof` against the artifact) before restarting the dispatcher/gateway.
+
+This slice still does not perform a live canonical-status schema backfill. It only supplies the reviewed backup, dry-run, and rollback proof gate required before a later live migration/backfill can be considered.
