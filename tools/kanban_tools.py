@@ -129,6 +129,84 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+_FUNCTIONALITY_TRACKING_TERMS = (
+    "deterministic",
+    "feature",
+    "behavior change",
+    "behaviour change",
+    "migration",
+    "safety gate",
+    "guard",
+    "code-affecting",
+    "functionality",
+    "implementation",
+    "automation",
+)
+
+_THREE_LAYER_REQUIRED_KEYS = ("matrix", "kanban", "github")
+
+
+def _looks_like_functionality_tracking_task(title: str, body: Optional[str]) -> bool:
+    """Heuristic for tasks that need Matrix/Kanban/GitHub tracking evidence.
+
+    The guard is deliberately narrow: it does not reject every coding task in
+    every Hermes install. It catches the downstream Hermes Maintenance class
+    that Yunuen corrected — deterministic functionality work (features,
+    behavior changes, migrations, safety gates, guards, or automation) whose
+    review handoff would otherwise be Kanban-only.
+    """
+    text = f"{title}\n{body or ''}".lower()
+    if "deterministic" in text and (
+        "functionality" in text
+        or "feature" in text
+        or "behavior" in text
+        or "behaviour" in text
+        or "code-affecting" in text
+    ):
+        return True
+    if "kanban-only" in text and ("github" in text or "matrix" in text):
+        return True
+    matches = sum(1 for term in _FUNCTIONALITY_TRACKING_TERMS if term in text)
+    return matches >= 3 and ("github" in text or "matrix" in text)
+
+
+def _extract_three_layer_tracking(metadata: Optional[dict]) -> Optional[dict]:
+    """Return accepted linkage evidence object from completion metadata."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in (
+        "three_layer_tracking",
+        "tracking",
+        "linkage_evidence",
+        "matrix_kanban_github",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _missing_three_layer_tracking(metadata: Optional[dict]) -> list[str]:
+    """Return required linkage layers absent from completion metadata."""
+    evidence = _extract_three_layer_tracking(metadata)
+    if evidence is None:
+        return list(_THREE_LAYER_REQUIRED_KEYS)
+
+    missing: list[str] = []
+    for key in _THREE_LAYER_REQUIRED_KEYS:
+        value = evidence.get(key)
+        if value is None:
+            missing.append(key)
+            continue
+        if isinstance(value, str) and not value.strip():
+            missing.append(key)
+            continue
+        if isinstance(value, (list, tuple, dict)) and not value:
+            missing.append(key)
+            continue
+    return missing
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -561,6 +639,21 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if task is not None and _looks_like_functionality_tracking_task(
+                task.title,
+                task.body,
+            ):
+                missing_tracking = _missing_three_layer_tracking(metadata)
+                if missing_tracking:
+                    return tool_error(
+                        "kanban_complete blocked: deterministic functionality "
+                        "changes require three-layer tracking evidence before a "
+                        "review-ready handoff. Add metadata.three_layer_tracking "
+                        "with non-empty matrix, kanban, and github entries; "
+                        f"missing: {', '.join(missing_tracking)}. "
+                        "Kanban-only tracking is insufficient for this class of work."
+                    )
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -1029,7 +1122,11 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. Deterministic "
+                    "functionality changes must include "
+                    "metadata.three_layer_tracking with non-empty "
+                    "matrix, kanban, and github evidence; Kanban-only "
+                    "tracking is insufficient for review-ready handoffs."
                 ),
             },
             "result": {
