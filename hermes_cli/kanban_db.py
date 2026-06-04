@@ -97,6 +97,21 @@ _log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+CANONICAL_LIVE_STATUSES = {"working", "waiting", "blocked", "dormant", "done"}
+CANONICAL_STATUS_FOR_STORAGE_STATUS = {
+    # Downstream Hermes Maintenance canonical status projection. The legacy
+    # storage/workflow statuses remain accepted for dispatcher compatibility in
+    # this first non-invasive slice, but user-facing surfaces should prefer this
+    # projection and treat the legacy value as compatibility-only metadata.
+    "ready": "working",
+    "running": "working",
+    "review": "working",
+    "todo": "waiting",
+    "scheduled": "waiting",
+    "blocked": "blocked",
+    "triage": "dormant",
+    "done": "done",
+}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
@@ -129,6 +144,362 @@ def live_status_for(status: str) -> str:
 
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
+
+
+def canonical_live_status(status: str) -> str:
+    """Return the downstream canonical live/user status for a task status.
+
+    This is the explicit compatibility adapter boundary for the first
+    downstream-only Kanban redesign slice: legacy storage/workflow aliases stay
+    readable by the existing dispatcher, while CLI/API/dashboard/user-facing
+    code can consistently render ``working``, ``waiting``, ``blocked``,
+    ``dormant``, or ``done``. ``archived`` is retention history rather than a
+    live state, so it is returned unchanged for archive-only views.
+    """
+    status = str(status or "").strip().lower()
+    return CANONICAL_STATUS_FOR_STORAGE_STATUS.get(status, status or "dormant")
+
+
+def canonical_live_status_for_task(conn: sqlite3.Connection, task_or_id: "Task | str") -> str:
+    """Return canonical live/user status for a task row or id.
+
+    Parent-gated descendants are canonical ``waiting`` even when a legacy row
+    has been incorrectly written as ``ready``. This catches the observed
+    regression without mutating the DB and gives migration dry-runs/dashboard
+    renderers a deterministic adapter before schema backfill lands.
+    """
+    task = get_task(conn, task_or_id) if isinstance(task_or_id, str) else task_or_id
+    if task is None:
+        raise ValueError(f"unknown task: {task_or_id}")
+    parents_open = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    if parents_open and task.status not in {"blocked", "done", "archived"}:
+        return "waiting"
+    return canonical_live_status(task.status)
+
+
+
+# ---------------------------------------------------------------------------
+# Downstream canonical status migration safety helpers
+# ---------------------------------------------------------------------------
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_readonly_connection(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _schema_metadata(conn: sqlite3.Connection) -> dict[str, Any]:
+    objects = [
+        {
+            "type": row["type"],
+            "name": row["name"],
+            "tbl_name": row["tbl_name"],
+            "sql": row["sql"] or "",
+        }
+        for row in conn.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type IN ('table', 'index', 'trigger', 'view') "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+    ]
+    schema_json = json.dumps(objects, sort_keys=True, separators=(",", ":"))
+    return {
+        "sqlite_version": sqlite3.sqlite_version,
+        "user_version": int(conn.execute("PRAGMA user_version").fetchone()[0]),
+        "application_id": int(conn.execute("PRAGMA application_id").fetchone()[0]),
+        "schema_object_count": len(objects),
+        "schema_sha256": hashlib.sha256(schema_json.encode("utf-8")).hexdigest(),
+        "objects": objects,
+    }
+
+
+def _task_status_distribution(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status ORDER BY status"
+    ).fetchall()
+    return {str(row["status"]): int(row["n"]) for row in rows}
+
+
+def _table_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    table_rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    for row in table_rows:
+        name = str(row["name"])
+        # sqlite_master names are internal trusted identifiers from this DB.
+        counts[name] = int(conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0])
+    return counts
+
+
+def create_kanban_backup(
+    db_path: str | Path | None = None,
+    *,
+    output_dir: str | Path | None = None,
+    timestamp: str | None = None,
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Create a deterministic SQLite backup plus metadata for a Kanban board DB.
+
+    The function uses SQLite's online backup API, not task-row updates. It is
+    safe to run before a future live migration/backfill because it does not
+    mutate tasks or schema. ``timestamp`` is injectable for deterministic tests;
+    production callers get a UTC timestamp in the artifact path.
+    """
+    source = Path(db_path) if db_path is not None else kanban_db_path(board=board)
+    if not source.exists():
+        raise FileNotFoundError(f"Kanban DB does not exist: {source}")
+    stamp = timestamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    dest_dir = Path(output_dir) if output_dir is not None else source.parent / "backups"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    backup_path = dest_dir / f"kanban-{stamp}.sqlite3"
+    metadata_path = dest_dir / f"kanban-{stamp}.metadata.json"
+    if backup_path.exists() or metadata_path.exists():
+        raise FileExistsError(f"backup artifact already exists for timestamp {stamp}: {dest_dir}")
+
+    with _sqlite_readonly_connection(source) as src, sqlite3.connect(str(backup_path)) as dst:
+        src.backup(dst)
+
+    board_slug = _normalize_board_slug(board) if board is not None else None
+    if board_slug is None and db_path is None:
+        board_slug = get_current_board()
+
+    with _sqlite_readonly_connection(backup_path) as backup_conn:
+        metadata = {
+            "artifact_type": "hermes-kanban-sqlite-backup",
+            "created_at_utc": stamp,
+            "board": board_slug,
+            "source_db_path": str(source),
+            "backup_path": str(backup_path),
+            "backup_sha256": _sha256_file(backup_path),
+            "backup_size_bytes": backup_path.stat().st_size,
+            "schema": _schema_metadata(backup_conn),
+            "table_counts": _table_counts(backup_conn),
+            "task_status_distribution": _task_status_distribution(backup_conn)
+            if _has_table(backup_conn, "tasks") else {},
+            "restore_instructions": [
+                "Stop Kanban dispatchers/gateways that might write to the target DB.",
+                "Verify the artifact checksum matches backup_sha256 in this metadata file.",
+                "Copy kanban-<timestamp>.sqlite3 over the target kanban.db, preserving an emergency copy of the current target first.",
+                "Restart the dispatcher/gateway only after sqlite integrity_check passes on the restored DB.",
+            ],
+        }
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    metadata["metadata_path"] = str(metadata_path)
+    return metadata
+
+
+def create_all_kanban_backups(
+    *,
+    output_dir: str | Path | None = None,
+    timestamp: str | None = None,
+    include_archived: bool = False,
+) -> dict[str, Any]:
+    """Create no-mutation backup artifacts for every discovered Kanban board.
+
+    Each board writes into its own ``<output_dir>/<board-slug>/`` directory so
+    the same timestamp can be reused safely across all projects. Boards without
+    an existing DB are reported as skipped instead of being auto-created.
+    """
+    stamp = timestamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    root = Path(output_dir) if output_dir is not None else kanban_home() / "kanban" / "backups" / stamp
+    root.mkdir(parents=True, exist_ok=True)
+
+    backups: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for meta in list_boards(include_archived=include_archived):
+        slug = str(meta["slug"])
+        db_path = Path(str(meta["db_path"]))
+        if not db_path.exists():
+            skipped.append({"board": slug, "db_path": str(db_path), "reason": "kanban.db does not exist"})
+            continue
+        backup = create_kanban_backup(
+            db_path,
+            output_dir=root / slug,
+            timestamp=stamp,
+            board=slug,
+        )
+        backup["board"] = slug
+        backups.append(backup)
+
+    return {
+        "artifact_type": "hermes-kanban-all-boards-backup",
+        "created_at_utc": stamp,
+        "output_dir": str(root),
+        "include_archived": include_archived,
+        "board_count": len(backups),
+        "skipped_count": len(skipped),
+        "backups": backups,
+        "skipped": skipped,
+        "restore_instructions": [
+            "Treat each board subdirectory as an independent rollback artifact.",
+            "Restore only the board(s) affected by a failed deployment unless a full-project rollback is required.",
+            "For every restored board, stop writers first, verify backup_sha256 from metadata, copy the board backup over that board's kanban.db, run integrity_check/rollback proof, then restart writers.",
+        ],
+    }
+
+
+def _has_table(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    return row is not None
+
+
+def canonical_status_migration_dry_run(
+    db_path: str | Path | None = None,
+    *,
+    board: str | None = None,
+) -> dict[str, Any]:
+    """Return a no-mutation report for future canonical status backfill.
+
+    The report identifies legacy storage aliases, parent-gated descendants that
+    should present as canonical ``waiting``, and every task row whose persisted
+    storage status differs from the proposed canonical status.
+    """
+    source = Path(db_path) if db_path is not None else kanban_db_path(board=board)
+    if not source.exists():
+        raise FileNotFoundError(f"Kanban DB does not exist: {source}")
+    with _sqlite_readonly_connection(source) as conn:
+        if not _has_table(conn, "tasks"):
+            raise RuntimeError(f"Kanban DB has no tasks table: {source}")
+        rows = conn.execute(
+            "SELECT id, title, assignee, status FROM tasks ORDER BY created_at, id"
+        ).fetchall()
+        open_parent_child_ids = {
+            str(row["child_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT l.child_id FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE p.status NOT IN ('done', 'archived')"
+            ).fetchall()
+        } if _has_table(conn, "task_links") else set()
+
+        task_reports: list[dict[str, Any]] = []
+        legacy_alias_rows: list[dict[str, Any]] = []
+        parent_gated_rows: list[dict[str, Any]] = []
+        would_change_rows: list[dict[str, Any]] = []
+        blocked_audit_rows: list[dict[str, Any]] = []
+
+        for row in rows:
+            status = str(row["status"] or "")
+            is_parent_gated = row["id"] in open_parent_child_ids and status not in {"blocked", "done", "archived"}
+            proposed = "waiting" if is_parent_gated else canonical_live_status(status)
+            is_legacy_alias = status not in CANONICAL_LIVE_STATUSES and status != "archived"
+            reason = "parent dependency is not done/archived" if is_parent_gated else "storage status compatibility alias"
+            if status == proposed:
+                reason = "already canonical"
+            report = {
+                "task_id": row["id"],
+                "title": row["title"],
+                "assignee": row["assignee"],
+                "storage_status": status,
+                "proposed_canonical_status": proposed,
+                "proposed_runtime_state": status,
+                "reason": reason,
+                "legacy_storage_alias": is_legacy_alias,
+                "parent_gated_waiting": is_parent_gated,
+                "would_change": status != proposed,
+            }
+            if status == "blocked":
+                report["blocker_human_audit"] = "requires-review: blocked must remain human-only before live migration"
+                blocked_audit_rows.append(report)
+            task_reports.append(report)
+            if is_legacy_alias:
+                legacy_alias_rows.append(report)
+            if is_parent_gated:
+                parent_gated_rows.append(report)
+            if report["would_change"]:
+                would_change_rows.append(report)
+
+        return {
+            "artifact_type": "hermes-kanban-canonical-status-dry-run",
+            "source_db_path": str(source),
+            "no_live_mutation": True,
+            "task_count": len(task_reports),
+            "storage_status_distribution": _task_status_distribution(conn),
+            "proposed_canonical_distribution": {
+                status: sum(1 for item in task_reports if item["proposed_canonical_status"] == status)
+                for status in sorted({item["proposed_canonical_status"] for item in task_reports})
+            },
+            "legacy_storage_alias_count": len(legacy_alias_rows),
+            "parent_gated_waiting_count": len(parent_gated_rows),
+            "would_change_count": len(would_change_rows),
+            "blocked_human_audit_count": len(blocked_audit_rows),
+            "legacy_storage_aliases": legacy_alias_rows,
+            "parent_gated_waiting": parent_gated_rows,
+            "would_change": would_change_rows,
+            "blocked_human_audit": blocked_audit_rows,
+            "tasks": task_reports,
+        }
+
+
+def verify_kanban_backup_restore(
+    backup_path: str | Path,
+    *,
+    temp_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Restore a backup into a temp DB and verify rollback evidence."""
+    source = Path(backup_path)
+    if not source.exists():
+        raise FileNotFoundError(f"backup does not exist: {source}")
+    restore_root = Path(temp_dir) if temp_dir is not None else source.parent / "restore-proof"
+    restore_root.mkdir(parents=True, exist_ok=True)
+    restored = restore_root / f"restored-{source.name}"
+    if restored.exists():
+        restored.unlink()
+    shutil.copy2(source, restored)
+
+    source_sha = _sha256_file(source)
+    restored_sha = _sha256_file(restored)
+    with _sqlite_readonly_connection(source) as src_conn, _sqlite_readonly_connection(restored) as restored_conn:
+        source_integrity = [row[0] for row in src_conn.execute("PRAGMA integrity_check").fetchall()]
+        restored_integrity = [row[0] for row in restored_conn.execute("PRAGMA integrity_check").fetchall()]
+        source_counts = _table_counts(src_conn)
+        restored_counts = _table_counts(restored_conn)
+        source_dist = _task_status_distribution(src_conn) if _has_table(src_conn, "tasks") else {}
+        restored_dist = _task_status_distribution(restored_conn) if _has_table(restored_conn, "tasks") else {}
+        source_schema = _schema_metadata(src_conn)
+        restored_schema = _schema_metadata(restored_conn)
+
+    ok = (
+        source_sha == restored_sha
+        and source_integrity == ["ok"]
+        and restored_integrity == ["ok"]
+        and source_counts == restored_counts
+        and source_dist == restored_dist
+        and source_schema["schema_sha256"] == restored_schema["schema_sha256"]
+    )
+    return {
+        "artifact_type": "hermes-kanban-rollback-proof",
+        "backup_path": str(source),
+        "restored_path": str(restored),
+        "ok": ok,
+        "backup_sha256": source_sha,
+        "restored_sha256": restored_sha,
+        "source_integrity_check": source_integrity,
+        "restored_integrity_check": restored_integrity,
+        "source_table_counts": source_counts,
+        "restored_table_counts": restored_counts,
+        "source_task_status_distribution": source_dist,
+        "restored_task_status_distribution": restored_dist,
+        "source_schema_sha256": source_schema["schema_sha256"],
+        "restored_schema_sha256": restored_schema["schema_sha256"],
+    }
 
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
