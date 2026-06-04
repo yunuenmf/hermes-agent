@@ -110,6 +110,24 @@ def test_run_slash_canonical_backup_dry_run_and_rollback_proof(kanban_home, tmp_
     assert "OK:       True" in out
 
 
+def test_run_slash_canonical_backup_all_boards(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="default", assignee="alice")
+    kb.create_board("project-a", name="Project A")
+    with kb.connect(board="project-a") as conn:
+        kb.create_task(conn, title="project", assignee="bob")
+
+    artifact_dir = tmp_path / "all-artifacts"
+    out = kc.run_slash(
+        f"canonical-backup --all-boards --output-dir {artifact_dir} --timestamp 20260604T030405Z"
+    )
+
+    assert "all boards" in out.lower()
+    assert "Boards:   2" in out
+    assert (artifact_dir / "default" / "kanban-20260604T030405Z.sqlite3").exists()
+    assert (artifact_dir / "project-a" / "kanban-20260604T030405Z.sqlite3").exists()
+
+
 def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("create 'ship feature' --assignee alice")
     assert "Created" in out

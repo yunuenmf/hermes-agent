@@ -274,10 +274,15 @@ def create_kanban_backup(
     with _sqlite_readonly_connection(source) as src, sqlite3.connect(str(backup_path)) as dst:
         src.backup(dst)
 
+    board_slug = _normalize_board_slug(board) if board is not None else None
+    if board_slug is None and db_path is None:
+        board_slug = get_current_board()
+
     with _sqlite_readonly_connection(backup_path) as backup_conn:
         metadata = {
             "artifact_type": "hermes-kanban-sqlite-backup",
             "created_at_utc": stamp,
+            "board": board_slug,
             "source_db_path": str(source),
             "backup_path": str(backup_path),
             "backup_sha256": _sha256_file(backup_path),
@@ -296,6 +301,56 @@ def create_kanban_backup(
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     metadata["metadata_path"] = str(metadata_path)
     return metadata
+
+
+def create_all_kanban_backups(
+    *,
+    output_dir: str | Path | None = None,
+    timestamp: str | None = None,
+    include_archived: bool = False,
+) -> dict[str, Any]:
+    """Create no-mutation backup artifacts for every discovered Kanban board.
+
+    Each board writes into its own ``<output_dir>/<board-slug>/`` directory so
+    the same timestamp can be reused safely across all projects. Boards without
+    an existing DB are reported as skipped instead of being auto-created.
+    """
+    stamp = timestamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    root = Path(output_dir) if output_dir is not None else kanban_home() / "kanban" / "backups" / stamp
+    root.mkdir(parents=True, exist_ok=True)
+
+    backups: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for meta in list_boards(include_archived=include_archived):
+        slug = str(meta["slug"])
+        db_path = Path(str(meta["db_path"]))
+        if not db_path.exists():
+            skipped.append({"board": slug, "db_path": str(db_path), "reason": "kanban.db does not exist"})
+            continue
+        backup = create_kanban_backup(
+            db_path,
+            output_dir=root / slug,
+            timestamp=stamp,
+            board=slug,
+        )
+        backup["board"] = slug
+        backups.append(backup)
+
+    return {
+        "artifact_type": "hermes-kanban-all-boards-backup",
+        "created_at_utc": stamp,
+        "output_dir": str(root),
+        "include_archived": include_archived,
+        "board_count": len(backups),
+        "skipped_count": len(skipped),
+        "backups": backups,
+        "skipped": skipped,
+        "restore_instructions": [
+            "Treat each board subdirectory as an independent rollback artifact.",
+            "Restore only the board(s) affected by a failed deployment unless a full-project rollback is required.",
+            "For every restored board, stop writers first, verify backup_sha256 from metadata, copy the board backup over that board's kanban.db, run integrity_check/rollback proof, then restart writers.",
+        ],
+    }
 
 
 def _has_table(conn: sqlite3.Connection, table: str) -> bool:

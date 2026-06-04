@@ -282,6 +282,31 @@ def test_kanban_backup_and_rollback_proof_are_deterministic_fixture_artifacts(ka
     assert proof["restored_integrity_check"] == ["ok"]
 
 
+def test_all_boards_backup_covers_every_project_without_autocreating_missing_dbs(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="default task", assignee="alice")
+    kb.create_board("project-a", name="Project A")
+    with kb.connect(board="project-a") as conn:
+        kb.create_task(conn, title="project task", assignee="bob")
+    kb.write_board_metadata("metadata-only", name="Metadata Only")
+
+    result = kb.create_all_kanban_backups(
+        output_dir=tmp_path / "all-project-backups",
+        timestamp="20260604T010203Z",
+    )
+
+    assert result["artifact_type"] == "hermes-kanban-all-boards-backup"
+    assert result["board_count"] == 2
+    assert {item["board"] for item in result["backups"]} == {"default", "project-a"}
+    assert {item["board"] for item in result["skipped"]} == {"metadata-only"}
+    for item in result["backups"]:
+        assert Path(item["backup_path"]).exists()
+        assert Path(item["metadata_path"]).exists()
+        assert Path(item["backup_path"]).parent == tmp_path / "all-project-backups" / item["board"]
+        proof = kb.verify_kanban_backup_restore(item["backup_path"], temp_dir=tmp_path / f"restore-{item['board']}")
+        assert proof["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

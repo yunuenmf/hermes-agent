@@ -395,6 +395,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_cbackup.add_argument("--db", default=None, help="Explicit kanban.db path (defaults to selected board)")
     p_cbackup.add_argument("--output-dir", default=None, help="Directory for backup + metadata artifacts")
     p_cbackup.add_argument("--timestamp", default=None, help="UTC timestamp for deterministic artifact names (tests/automation)")
+    p_cbackup.add_argument("--all-boards", action="store_true", help="Back up every discovered Kanban project/board")
+    p_cbackup.add_argument("--include-archived", action="store_true", help="With --all-boards, include archived boards")
     p_cbackup.add_argument("--json", action="store_true")
 
     p_cdry = sub.add_parser(
@@ -1048,6 +1050,26 @@ def _print_json_or_summary(payload: dict[str, Any], *, json_output: bool, summar
 
 
 def _cmd_canonical_backup(args: argparse.Namespace) -> int:
+    if getattr(args, "all_boards", False):
+        if getattr(args, "db", None):
+            raise SystemExit("--db cannot be combined with --all-boards")
+        result = kb.create_all_kanban_backups(
+            output_dir=getattr(args, "output_dir", None),
+            timestamp=getattr(args, "timestamp", None),
+            include_archived=bool(getattr(args, "include_archived", False)),
+        )
+        return _print_json_or_summary(
+            result,
+            json_output=bool(getattr(args, "json", False)),
+            summary_lines=[
+                "Canonical status migration backups created for all boards (no live DB mutation).",
+                f"  Output:   {result['output_dir']}",
+                f"  Boards:   {result['board_count']}",
+                f"  Skipped:  {result['skipped_count']}",
+                "  Restore:  see each board metadata JSON",
+            ],
+        )
+
     result = kb.create_kanban_backup(
         args.db,
         output_dir=getattr(args, "output_dir", None),
