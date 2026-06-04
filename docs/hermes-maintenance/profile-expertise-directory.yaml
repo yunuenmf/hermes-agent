@@ -1,0 +1,344 @@
+schema_version: 1
+directory_visibility: internal_public_safe
+canonical_owner: responsible_project_autonomy
+update_cadence: "on profile create/rename/retire and during monthly Hermes Maintenance review"
+privacy_rules:
+  - "Do not expose private Matrix room IDs, invite links, tokens, API keys, credential paths, personal phone numbers, or private chat identifiers."
+  - "Use contact route abstractions such as direct_profile_command or validated_internal_room instead of raw room IDs."
+  - "Mark entries restricted when a profile's existence, project boundary, or contact route is not safe for broad internal discovery."
+decision_rule:
+  proceed_locally:
+    - "The task is small, reversible, repo-local, already covered by current docs/tests, and does not introduce a new external dependency or policy choice."
+    - "A local verification command can prove the answer without current internet facts or another profile's private project context."
+  research_prior_art:
+    - "The task is unfamiliar, non-trivial, externally dependent, security/privacy/licensing/cost sensitive, or asks whether existing tools or prior attempts already solve it."
+    - "The answer depends on current versions, public APIs, standards, incidents, pricing, model capabilities, or third-party documentation."
+  consult_profile:
+    - "The directory shows a strong owner or expertise match and the question crosses that profile's project or milestone boundary."
+    - "The profile likely has non-public project context, recent implementation memory, or a narrower skill set that materially improves the answer."
+    - "Use lookup -> score -> narrowcast -> summarize: ask the smallest relevant audience, normally one best-fit profile first."
+  ask_yunuen:
+    - "The choice changes architecture, project boundaries, privacy, secret exposure, Matrix/contact topology, user-facing behavior, cost, legal/licensing posture, or irreversible operations."
+    - "The directory has no safe owner for a high-impact decision and proceeding would create hidden policy."
+profile_fields:
+  required:
+    - profile_id
+    - display_name
+    - profile_type
+    - project
+    - tree_path
+    - role_summary
+    - expertise_tags
+    - owned_domains
+    - consult_on
+    - do_not_consult_for
+    - contact
+    - privacy_level
+    - status
+    - owner
+    - last_verified
+  contact_shape:
+    method: "direct_profile_command | validated_internal_room | kanban_assignment_only | none"
+    route: "Public-safe route abstraction; never a raw private room ID or token."
+    escalation: "Who to ask if the route is unavailable."
+profiles:
+  - profile_id: default
+    display_name: "Default profile"
+    profile_type: personal_assistant
+    project: global
+    tree_path: [pa_yunuen, default]
+    role_summary: "Default Hermes profile on this machine; currently described like project_autonomy, but should not be treated as a project-owned specialist unless explicitly assigned."
+    expertise_tags: [default_profile, general]
+    owned_domains: [default_profile_state]
+    consult_on: [general_default_profile_questions]
+    do_not_consult_for: [bounded_project_milestone_work_when_specialist_exists]
+    contact: {method: direct_profile_command, route: "hermes -p default chat --toolsets safe", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: active
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: pa_yunuen
+    display_name: "Yunuen PA"
+    profile_type: personal_assistant
+    project: global
+    tree_path: [pa_yunuen]
+    role_summary: "Top-layer personal assistant for Yunuen; administers project creation/destruction and delegates project work to coordinators."
+    expertise_tags: [project_admin, delegation, human_interface]
+    owned_domains: [top_level_project_administration]
+    consult_on: [human_facing_project_decisions, project_creation_or_destruction]
+    do_not_consult_for: [routine_milestone_execution, repo_local_implementation]
+    contact: {method: direct_profile_command, route: "hermes -p pa_yunuen chat --toolsets safe", escalation: Yunuen}
+    privacy_level: public_safe
+    status: active
+    owner: Yunuen
+    last_verified: "2026-06-04"
+  - profile_id: coordinator_master
+    display_name: "Coordinator master mould"
+    profile_type: template
+    project: global
+    tree_path: [coordinator_master]
+    role_summary: "Template for project coordinators; do not assign as a worker."
+    expertise_tags: [template, coordinator_pattern]
+    owned_domains: [coordinator_profile_template]
+    consult_on: [coordinator_template_policy]
+    do_not_consult_for: [project_work, implementation, research]
+    contact: {method: none, route: "template only", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: template
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: coordinator_hermes_maintenance
+    display_name: "Hermes Maintenance coordinator"
+    profile_type: coordinator
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance]
+    role_summary: "Project coordinator for Hermes Maintenance: autonomy, gateway/Kanban architecture, watchdogs, and system maintenance."
+    expertise_tags: [hermes_maintenance, kanban, matrix, watchdogs, architecture]
+    owned_domains: [hermes_maintenance_board, project_coordination, milestone_routing]
+    consult_on: [cross_milestone_coordination, project_priority, board_level_dependencies]
+    do_not_consult_for: [single_milestone_detail_when_owner_exists, generic_coding]
+    contact: {method: direct_profile_command, route: "hermes -p coordinator_hermes_maintenance chat --toolsets safe", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: active
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: responsible_project_autonomy
+    display_name: "Project autonomy responsible"
+    profile_type: responsible
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, responsible_project_autonomy]
+    role_summary: "Hermes Maintenance milestone owner for one-project/one-coordinator/one-board/one-dispatch-owner/one-watchdog architecture and rollout proof."
+    expertise_tags: [project_autonomy, dispatch_owner, project_boundaries, watchdog_split, profile_directory]
+    owned_domains: [project_autonomy_milestone, profile_directory_policy, dispatcher_ownership_policy]
+    consult_on: [project_boundaries, profile_tree_policy, dispatcher_owner_metadata, project_watchdog_split]
+    do_not_consult_for: [memory_hygiene_details, matrix_room_operations, implementation_not_in_lane]
+    contact: {method: direct_profile_command, route: "hermes -p responsible_project_autonomy chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: responsible_board_safety
+    display_name: "Board safety responsible"
+    profile_type: responsible
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, responsible_board_safety]
+    role_summary: "Hermes Maintenance milestone owner for board safety."
+    expertise_tags: [board_safety, kanban_db_repair, backup_first, blocker_audit]
+    owned_domains: [board_safety_milestone]
+    consult_on: [kanban_db_sanitation, backup_first_board_repair, board_safety_rollout]
+    do_not_consult_for: [project_autonomy_policy, matrix_room_hardening]
+    contact: {method: direct_profile_command, route: "hermes -p responsible_board_safety chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: responsible_kanban_semantics
+    display_name: "Kanban semantics responsible"
+    profile_type: responsible
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, responsible_kanban_semantics]
+    role_summary: "Hermes Maintenance milestone owner for canonical Kanban live-state semantics."
+    expertise_tags: [kanban_semantics, statuses, blocked_waiting, live_state]
+    owned_domains: [kanban_semantics_milestone]
+    consult_on: [status_vocabulary, blocked_vs_waiting_policy, kanban_state_mapping]
+    do_not_consult_for: [matrix_device_verification, memory_rollout]
+    contact: {method: direct_profile_command, route: "hermes -p responsible_kanban_semantics chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: responsible_memory_rollout
+    display_name: "Memory rollout responsible"
+    profile_type: responsible
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, responsible_memory_rollout]
+    role_summary: "Hermes Maintenance milestone owner for memory rollout and profile memory hygiene."
+    expertise_tags: [memory, skills, profile_hygiene, rollout]
+    owned_domains: [memory_rollout_milestone]
+    consult_on: [memory_policy, reusable_skill_capture, profile_memory_hygiene, directory_to_memory_mirroring]
+    do_not_consult_for: [dispatcher_ownership, matrix_room_setup]
+    contact: {method: direct_profile_command, route: "hermes -p responsible_memory_rollout chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: responsible_matrix_hardening
+    display_name: "Matrix hardening responsible"
+    profile_type: responsible
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, responsible_matrix_hardening]
+    role_summary: "Hermes Maintenance milestone owner for Matrix gateway/profile-room hardening."
+    expertise_tags: [matrix, gateway, room_isolation, encryption, profile_contact]
+    owned_domains: [matrix_hardening_milestone]
+    consult_on: [matrix_route_exposure, profile_room_isolation, gateway_activation, encryption_choice]
+    do_not_consult_for: [non_matrix_directory_fields, generic_profile_descriptions]
+    contact: {method: direct_profile_command, route: "hermes -p responsible_matrix_hardening chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: researcher_hermes_maintenance
+    display_name: "Hermes Maintenance researcher"
+    profile_type: researcher
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, researcher_hermes_maintenance]
+    role_summary: "Research profile for Hermes Maintenance architecture and external/tooling research."
+    expertise_tags: [research, prior_art, architecture, external_docs, evidence]
+    owned_domains: [hermes_maintenance_research]
+    consult_on: [prior_art, public_tooling_research, cited_decision_briefs, external_docs]
+    do_not_consult_for: [tiny_repo_local_fixes, final_architecture_approval]
+    contact: {method: direct_profile_command, route: "hermes -p researcher_hermes_maintenance chat --toolsets safe,web", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: developer_hermes_maintenance
+    display_name: "Hermes Maintenance developer"
+    profile_type: developer
+    project: hermes-maintenance
+    tree_path: [pa_yunuen, coordinator_hermes_maintenance, developer_hermes_maintenance]
+    role_summary: "Implementation profile for Hermes Maintenance work in independent git worktrees."
+    expertise_tags: [implementation, tests, git_worktree, pr]
+    owned_domains: [hermes_maintenance_implementation]
+    consult_on: [implementation_feasibility, test_strategy, repo_local_code_paths]
+    do_not_consult_for: [human_policy_decisions, public_prior_art]
+    contact: {method: direct_profile_command, route: "hermes -p developer_hermes_maintenance chat --toolsets safe", escalation: coordinator_hermes_maintenance}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_maintenance
+    last_verified: "2026-06-04"
+  - profile_id: pa_master
+    display_name: "Personal assistant master mould"
+    profile_type: template
+    project: global
+    tree_path: [pa_yunuen, pa_master]
+    role_summary: "Template for top-layer personal-assistant project administration profiles; do not assign project work directly."
+    expertise_tags: [template, personal_assistant_pattern, project_admin]
+    owned_domains: [personal_assistant_profile_template]
+    consult_on: [personal_assistant_template_policy]
+    do_not_consult_for: [project_work, implementation, research]
+    contact: {method: none, route: "template only", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: template
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: responsible_master
+    display_name: "Responsible master mould"
+    profile_type: template
+    project: global
+    tree_path: [coordinator_master, responsible_master]
+    role_summary: "Template for milestone responsible profiles; do not assign project work directly."
+    expertise_tags: [template, milestone_owner_pattern]
+    owned_domains: [responsible_profile_template]
+    consult_on: [responsible_template_policy]
+    do_not_consult_for: [project_work, implementation, research]
+    contact: {method: none, route: "template only", escalation: coordinator_master}
+    privacy_level: public_safe
+    status: template
+    owner: coordinator_master
+    last_verified: "2026-06-04"
+  - profile_id: researcher_master
+    display_name: "Researcher master mould"
+    profile_type: template
+    project: global
+    tree_path: [coordinator_master, researcher_master]
+    role_summary: "Template for internet/source research, evidence gathering, comparisons, and decision briefs."
+    expertise_tags: [template, research_pattern]
+    owned_domains: [researcher_profile_template]
+    consult_on: [researcher_template_policy]
+    do_not_consult_for: [project_work]
+    contact: {method: none, route: "template only", escalation: coordinator_master}
+    privacy_level: public_safe
+    status: template
+    owner: coordinator_master
+    last_verified: "2026-06-04"
+  - profile_id: developer_master
+    display_name: "Developer master mould"
+    profile_type: template
+    project: global
+    tree_path: [coordinator_master, developer_master]
+    role_summary: "Template for implementation/coding worker profiles; do not assign project work directly."
+    expertise_tags: [template, developer_pattern]
+    owned_domains: [developer_profile_template]
+    consult_on: [developer_template_policy]
+    do_not_consult_for: [project_work]
+    contact: {method: none, route: "template only", escalation: coordinator_master}
+    privacy_level: public_safe
+    status: template
+    owner: coordinator_master
+    last_verified: "2026-06-04"
+  - profile_id: coordinator_hermes_migration_system
+    display_name: "Hermes Migration System coordinator"
+    profile_type: coordinator
+    project: hermes-migration-system
+    tree_path: [pa_yunuen, coordinator_hermes_migration_system]
+    role_summary: "Project coordinator for Hermes Migration System; separate from Hermes Maintenance until milestone review."
+    expertise_tags: [migration_system, coordinator]
+    owned_domains: [hermes_migration_system_board]
+    consult_on: [migration_system_project_boundary]
+    do_not_consult_for: [hermes_maintenance_milestone_work]
+    contact: {method: direct_profile_command, route: "hermes -p coordinator_hermes_migration_system chat --toolsets safe", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: active
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: researcher_hermes_migration_system
+    display_name: "Hermes Migration System researcher"
+    profile_type: researcher
+    project: hermes-migration-system
+    tree_path: [pa_yunuen, coordinator_hermes_migration_system, researcher_hermes_migration_system]
+    role_summary: "Research support profile for the hermes-migration-system project."
+    expertise_tags: [migration_system, research]
+    owned_domains: [hermes_migration_system_research]
+    consult_on: [migration_system_research]
+    do_not_consult_for: [hermes_maintenance_policy]
+    contact: {method: direct_profile_command, route: "hermes -p researcher_hermes_migration_system chat --toolsets safe,web", escalation: coordinator_hermes_migration_system}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_migration_system
+    last_verified: "2026-06-04"
+  - profile_id: developer_hermes_migration_system
+    display_name: "Hermes Migration System developer"
+    profile_type: developer
+    project: hermes-migration-system
+    tree_path: [pa_yunuen, coordinator_hermes_migration_system, developer_hermes_migration_system]
+    role_summary: "Project-scoped implementation/coding worker for the Hermes Migration System project."
+    expertise_tags: [migration_system, implementation]
+    owned_domains: [hermes_migration_system_implementation]
+    consult_on: [migration_system_implementation]
+    do_not_consult_for: [hermes_maintenance_implementation]
+    contact: {method: direct_profile_command, route: "hermes -p developer_hermes_migration_system chat --toolsets safe", escalation: coordinator_hermes_migration_system}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_hermes_migration_system
+    last_verified: "2026-06-04"
+  - profile_id: coordinator_qwen_image_layered
+    display_name: "Qwen Image Layered coordinator"
+    profile_type: coordinator
+    project: qwen-image-layered
+    tree_path: [pa_yunuen, coordinator_qwen_image_layered]
+    role_summary: "Project coordinator for Qwen-Image-Layered local installation/testing."
+    expertise_tags: [qwen_image_layered, coordinator, local_inference]
+    owned_domains: [qwen_image_layered_project]
+    consult_on: [qwen_image_layered_project_boundary]
+    do_not_consult_for: [hermes_maintenance_policy]
+    contact: {method: direct_profile_command, route: "hermes -p coordinator_qwen_image_layered chat --toolsets safe", escalation: pa_yunuen}
+    privacy_level: public_safe
+    status: active
+    owner: pa_yunuen
+    last_verified: "2026-06-04"
+  - profile_id: researcher_qwen_image_layered
+    display_name: "Qwen Image Layered researcher"
+    profile_type: researcher
+    project: qwen-image-layered
+    tree_path: [pa_yunuen, coordinator_qwen_image_layered, researcher_qwen_image_layered]
+    role_summary: "Research specialist for Qwen-Image-Layered local inference, dependency checks, VRAM feasibility, and cited decision briefs."
+    expertise_tags: [qwen_image_layered, local_inference, cuda, pytorch, huggingface]
+    owned_domains: [qwen_image_layered_research]
+    consult_on: [qwen_image_layered_model_research, cuda_pytorch_feasibility]
+    do_not_consult_for: [hermes_maintenance_policy]
+    contact: {method: direct_profile_command, route: "hermes -p researcher_qwen_image_layered chat --toolsets safe,web", escalation: coordinator_qwen_image_layered}
+    privacy_level: public_safe
+    status: active
+    owner: coordinator_qwen_image_layered
+    last_verified: "2026-06-04"
