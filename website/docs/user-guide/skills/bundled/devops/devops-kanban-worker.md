@@ -94,6 +94,11 @@ kanban_comment(
         "tests_passed": 14,
         "diff_path": "/path/to/worktree",  # or PR url if pushed
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        "three_layer_tracking": {
+            "matrix": "Matrix update mentions task t_example and issue/PR #123",
+            "kanban": "task t_example plus this review-required handoff",
+            "github": "issue/PR https://github.com/org/repo/issues/123",
+        },
     }, indent=2),
 )
 kanban_block(

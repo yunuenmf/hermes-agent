@@ -412,6 +412,85 @@ def test_functionality_tracking_guard_accepts_three_layer_evidence(worker_env):
     assert json.loads(out)["ok"] is True
 
 
+def test_functionality_tracking_guard_catches_common_feature_terms(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "add feature: OAuth login",
+                "User-facing implementation work.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "feature done"})
+    err = json.loads(out).get("error", "")
+    assert "three-layer tracking evidence" in err
+
+
+def test_review_required_block_requires_three_layer_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "migration: require tracking evidence",
+                "Safety gate implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_block({"reason": "review-required: implementation ready"})
+    err = json.loads(out).get("error", "")
+    assert "review-required handoffs" in err
+    assert "Matrix, Kanban, and GitHub" in err
+
+
+def test_review_required_block_accepts_comment_linkage_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "safety gate: require tracking evidence",
+                "Guard implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    comment = kt._handle_comment({
+        "task_id": worker_env,
+        "body": (
+            "review-required handoff: Matrix update sent; "
+            f"Kanban task {worker_env}; GitHub issue "
+            "https://github.com/yunuenmf/hermes-maintenance/issues/28"
+        ),
+    })
+    assert json.loads(comment)["ok"] is True
+
+    out = kt._handle_block({"reason": "review-required: implementation ready"})
+    assert json.loads(out)["ok"] is True
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

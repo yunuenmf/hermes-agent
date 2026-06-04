@@ -143,6 +143,26 @@ _FUNCTIONALITY_TRACKING_TERMS = (
     "automation",
 )
 
+_FUNCTIONALITY_TRACKING_STRONG_TERMS = (
+    "feature",
+    "behavior change",
+    "behaviour change",
+    "migration",
+    "safety gate",
+    "guard",
+    "code-affecting",
+    "functionality",
+    "automation",
+)
+
+_FUNCTIONALITY_TRACKING_ACTION_PREFIXES = (
+    "add ",
+    "build ",
+    "create ",
+    "implement ",
+    "ship ",
+)
+
 _THREE_LAYER_REQUIRED_KEYS = ("matrix", "kanban", "github")
 
 
@@ -166,8 +186,28 @@ def _looks_like_functionality_tracking_task(title: str, body: Optional[str]) -> 
         return True
     if "kanban-only" in text and ("github" in text or "matrix" in text):
         return True
+    if any(term in text for term in _FUNCTIONALITY_TRACKING_STRONG_TERMS):
+        return True
+    title_text = (title or "").strip().lower()
+    if title_text.startswith(_FUNCTIONALITY_TRACKING_ACTION_PREFIXES):
+        return True
     matches = sum(1 for term in _FUNCTIONALITY_TRACKING_TERMS if term in text)
     return matches >= 3 and ("github" in text or "matrix" in text)
+
+
+def _text_has_three_layer_tracking_evidence(text: str) -> bool:
+    """Best-effort check for Matrix/Kanban/GitHub evidence in review comments.
+
+    Review-required workers hand off via ``kanban_comment`` followed by
+    ``kanban_block`` rather than ``kanban_complete``. Comments are free-form,
+    so this is intentionally shape-tolerant: JSON keys, prose, or URLs count
+    as long as all three layers are named.
+    """
+    lowered = (text or "").lower()
+    has_matrix = "matrix" in lowered
+    has_kanban = "kanban" in lowered or "t_" in lowered
+    has_github = "github" in lowered or "github.com" in lowered
+    return has_matrix and has_kanban and has_github
 
 
 def _extract_three_layer_tracking(metadata: Optional[dict]) -> Optional[dict]:
@@ -713,6 +753,22 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if (
+                task is not None
+                and str(reason).strip().lower().startswith("review-required:")
+                and _looks_like_functionality_tracking_task(task.title, task.body)
+            ):
+                comments = kb.list_comments(conn, tid)
+                evidence_text = "\n".join([str(reason)] + [c.body for c in comments])
+                if not _text_has_three_layer_tracking_evidence(evidence_text):
+                    return tool_error(
+                        "kanban_block blocked: review-required handoffs for "
+                        "deterministic functionality changes require Matrix, "
+                        "Kanban, and GitHub linkage evidence in the block "
+                        "reason or prior kanban_comment. Kanban-only tracking "
+                        "is insufficient for this class of work."
+                    )
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
