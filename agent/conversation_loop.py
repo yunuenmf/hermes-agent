@@ -4607,6 +4607,18 @@ def run_conversation(
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
 
+    # Hermes Maintenance deterministic status-line footer.
+    # This runs after all tool/reporting side effects and output-transform hooks,
+    # so the appended Self/Lineage lines reflect post-execution board state rather
+    # than stale model-written prose.  Existing model-written Self/Lineage lines
+    # are stripped and replaced to prevent chat-local descendant hallucinations.
+    if final_response and not interrupted:
+        try:
+            from hermes_cli.maintenance_status_lines import append_status_lines_if_enabled as _append_maintenance_status_lines
+            final_response = _append_maintenance_status_lines(final_response)
+        except Exception as exc:
+            logger.warning("maintenance status-line append failed: %s", exc)
+
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can use this to persist conversation data (e.g. sync
