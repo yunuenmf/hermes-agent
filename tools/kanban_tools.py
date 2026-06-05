@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 # Gating
 # ---------------------------------------------------------------------------
 
-KANBAN_LIST_DEFAULT_LIMIT = 50
-KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_LIST_DEFAULT_LIMIT = 20
+KANBAN_LIST_MAX_LIMIT = 100
 
 KANBAN_SHOW_DEFAULT_COMMENT_LIMIT = 3
 KANBAN_SHOW_DEFAULT_EVENT_LIMIT = 10
@@ -137,6 +137,124 @@ def _stamp_worker_session_metadata(
     return stamped
 
 
+_FUNCTIONALITY_TRACKING_TERMS = (
+    "deterministic",
+    "feature",
+    "behavior change",
+    "behaviour change",
+    "migration",
+    "safety gate",
+    "guard",
+    "code-affecting",
+    "functionality",
+    "implementation",
+    "automation",
+)
+
+_FUNCTIONALITY_TRACKING_STRONG_TERMS = (
+    "feature",
+    "behavior change",
+    "behaviour change",
+    "migration",
+    "safety gate",
+    "guard",
+    "code-affecting",
+    "functionality",
+    "automation",
+)
+
+_FUNCTIONALITY_TRACKING_ACTION_PREFIXES = (
+    "add ",
+    "build ",
+    "create ",
+    "implement ",
+    "ship ",
+)
+
+_THREE_LAYER_REQUIRED_KEYS = ("matrix", "kanban", "github")
+
+
+def _looks_like_functionality_tracking_task(title: str, body: Optional[str]) -> bool:
+    """Heuristic for tasks that need Matrix/Kanban/GitHub tracking evidence.
+
+    The guard is deliberately narrow: it does not reject every coding task in
+    every Hermes install. It catches the downstream Hermes Maintenance class
+    that Yunuen corrected — deterministic functionality work (features,
+    behavior changes, migrations, safety gates, guards, or automation) whose
+    review handoff would otherwise be Kanban-only.
+    """
+    text = f"{title}\n{body or ''}".lower()
+    if "deterministic" in text and (
+        "functionality" in text
+        or "feature" in text
+        or "behavior" in text
+        or "behaviour" in text
+        or "code-affecting" in text
+    ):
+        return True
+    if "kanban-only" in text and ("github" in text or "matrix" in text):
+        return True
+    if any(term in text for term in _FUNCTIONALITY_TRACKING_STRONG_TERMS):
+        return True
+    title_text = (title or "").strip().lower()
+    if title_text.startswith(_FUNCTIONALITY_TRACKING_ACTION_PREFIXES):
+        return True
+    matches = sum(1 for term in _FUNCTIONALITY_TRACKING_TERMS if term in text)
+    return matches >= 3 and ("github" in text or "matrix" in text)
+
+
+def _text_has_three_layer_tracking_evidence(text: str) -> bool:
+    """Best-effort check for Matrix/Kanban/GitHub evidence in review comments.
+
+    Review-required workers hand off via ``kanban_comment`` followed by
+    ``kanban_block`` rather than ``kanban_complete``. Comments are free-form,
+    so this is intentionally shape-tolerant: JSON keys, prose, or URLs count
+    as long as all three layers are named.
+    """
+    lowered = (text or "").lower()
+    has_matrix = "matrix" in lowered
+    has_kanban = "kanban" in lowered or "t_" in lowered
+    has_github = "github" in lowered or "github.com" in lowered
+    return has_matrix and has_kanban and has_github
+
+
+def _extract_three_layer_tracking(metadata: Optional[dict]) -> Optional[dict]:
+    """Return accepted linkage evidence object from completion metadata."""
+    if not isinstance(metadata, dict):
+        return None
+    for key in (
+        "three_layer_tracking",
+        "tracking",
+        "linkage_evidence",
+        "matrix_kanban_github",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _missing_three_layer_tracking(metadata: Optional[dict]) -> list[str]:
+    """Return required linkage layers absent from completion metadata."""
+    evidence = _extract_three_layer_tracking(metadata)
+    if evidence is None:
+        return list(_THREE_LAYER_REQUIRED_KEYS)
+
+    missing: list[str] = []
+    for key in _THREE_LAYER_REQUIRED_KEYS:
+        value = evidence.get(key)
+        if value is None:
+            missing.append(key)
+            continue
+        if isinstance(value, str) and not value.strip():
+            missing.append(key)
+            continue
+        if isinstance(value, (list, tuple, dict)) and not value:
+            missing.append(key)
+            continue
+    return missing
+
+
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     """Reject worker-driven destructive calls on foreign task IDs.
 
@@ -182,6 +300,90 @@ def _connect(board: Optional[str] = None):
     """
     from hermes_cli import kanban_db as kb
     return kb, kb.connect(board=board)
+
+
+# ---------------------------------------------------------------------------
+# Runtime-activity → board-heartbeat bridge (#31752)
+# ---------------------------------------------------------------------------
+# When the agent ticks ``_touch_activity`` during normal work (between
+# tool calls, mid-stream chunks, etc.), we want the kanban board's
+# ``last_heartbeat_at`` columns to reflect that liveness so the dispatcher
+# watchdog (which reads ``tasks.last_heartbeat_at``, not the agent's
+# in-process timestamp) doesn't reclaim an actively-running worker as
+# stale. The model is not required to call the explicit ``kanban_heartbeat``
+# tool for this to work — that tool stays available for workers that want
+# to attach a note or pre-emptively extend a claim across a known-long op.
+#
+# Constraints:
+#   - Best-effort: never raise. The agent loop must not care if the bridge
+#     fails (board missing, DB locked, etc.).
+#   - Rate-limited to one DB write per 60s per-process; runtime activity
+#     can tick on every chunk/tool result and we don't need that resolution.
+#   - No-op outside dispatcher-spawned worker context (no ``HERMES_KANBAN_TASK``).
+#   - No durable note on these auto-heartbeats; that's reserved for the
+#     explicit tool which carries a model-supplied note.
+
+_AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
+_auto_heartbeat_last_attempt: float = 0.0
+
+
+def heartbeat_current_worker_from_env() -> bool:
+    """Best-effort: extend the kanban claim + bump board heartbeat for the
+    current dispatcher-spawned worker, using identity from env vars.
+
+    Returns True if a write was attempted (whether or not it succeeded);
+    False if the call was skipped (not a kanban worker, rate-limited, or
+    swallowed exception). The boolean is informational — callers should
+    not branch on it.
+
+    Identity comes from:
+      * ``HERMES_KANBAN_TASK`` — task id (required; absence means no-op)
+      * ``HERMES_KANBAN_RUN_ID`` — pins the run row so we don't heartbeat
+        a stale run that may have already been reclaimed
+      * ``HERMES_KANBAN_CLAIM_LOCK`` — claim lock for ``heartbeat_claim``;
+        falls back to the default ``_claimer_id()`` for locally-driven
+        workers that never went through the dispatcher path
+
+    Rate-limited via the module-level ``_auto_heartbeat_last_attempt``
+    timestamp (monotonic clock); not thread-safe in the strict sense, but
+    the worst case is one extra DB write per race, which is harmless.
+    """
+    global _auto_heartbeat_last_attempt
+    tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not tid:
+        return False
+    import time as _time
+    now = _time.monotonic()
+    if (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        return False
+    _auto_heartbeat_last_attempt = now
+    try:
+        kb, conn = _connect()
+        try:
+            claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+            try:
+                kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_claim failed", exc_info=True)
+            run_id_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+            run_id: Optional[int]
+            try:
+                run_id = int(run_id_raw) if run_id_raw else None
+            except (TypeError, ValueError):
+                run_id = None
+            try:
+                kb.heartbeat_worker(conn, tid, note=None, expected_run_id=run_id)
+            except Exception:
+                logger.debug("auto-heartbeat: heartbeat_worker failed", exc_info=True)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return True
+    except Exception:
+        logger.debug("auto-heartbeat: bridge failed", exc_info=True)
+        return False
 
 
 def _ok(**fields: Any) -> str:
@@ -270,30 +472,34 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     return None
 
 
-def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
+def _task_summary_dict(kb, conn, task, *, detail: bool = False) -> dict[str, Any]:
     """Compact task shape for board-listing tools."""
     parents = kb.parent_ids(conn, task.id)
     children = kb.child_ids(conn, task.id)
-    return {
+    summary = {
         "id": task.id,
         "title": task.title,
         "assignee": task.assignee,
         "status": task.status,
         "priority": task.priority,
         "tenant": task.tenant,
-        "workspace_kind": task.workspace_kind,
-        "workspace_path": task.workspace_path,
-        "created_by": task.created_by,
-        "created_at": task.created_at,
-        "started_at": task.started_at,
-        "completed_at": task.completed_at,
-        "current_run_id": task.current_run_id,
-        "model_override": task.model_override,
-        "parents": parents,
-        "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
     }
+    if detail:
+        summary.update({
+            "workspace_kind": task.workspace_kind,
+            "workspace_path": task.workspace_path,
+            "created_by": task.created_by,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "current_run_id": task.current_run_id,
+            "model_override": task.model_override,
+            "parents": parents,
+            "children": children,
+        })
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +699,9 @@ def _handle_list(args: dict, **kw) -> str:
     include_archived, bool_error = _parse_bool_arg(args, "include_archived")
     if bool_error:
         return tool_error(bool_error)
+    detail, bool_error = _parse_bool_arg(args, "detail")
+    if bool_error:
+        return tool_error(bool_error)
     limit = args.get("limit")
     if limit is None:
         limit = KANBAN_LIST_DEFAULT_LIMIT
@@ -524,7 +733,7 @@ def _handle_list(args: dict, **kw) -> str:
             truncated = len(rows) > limit
             tasks = rows[:limit]
             return json.dumps({
-                "tasks": [_task_summary_dict(kb, conn, t) for t in tasks],
+                "tasks": [_task_summary_dict(kb, conn, t, detail=detail) for t in tasks],
                 "count": len(tasks),
                 "limit": limit,
                 "truncated": truncated,
@@ -532,6 +741,7 @@ def _handle_list(args: dict, **kw) -> str:
                     min(limit * 2, KANBAN_LIST_MAX_LIMIT)
                     if truncated and limit < KANBAN_LIST_MAX_LIMIT else None
                 ),
+                "detail": detail,
                 "promoted": promoted,
             })
         finally:
@@ -623,6 +833,21 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if task is not None and _looks_like_functionality_tracking_task(
+                task.title,
+                task.body,
+            ):
+                missing_tracking = _missing_three_layer_tracking(metadata)
+                if missing_tracking:
+                    return tool_error(
+                        "kanban_complete blocked: deterministic functionality "
+                        "changes require three-layer tracking evidence before a "
+                        "review-ready handoff. Add metadata.three_layer_tracking "
+                        "with non-empty matrix, kanban, and github entries; "
+                        f"missing: {', '.join(missing_tracking)}. "
+                        "Kanban-only tracking is insufficient for this class of work."
+                    )
             try:
                 ok = kb.complete_task(
                     conn, tid,
@@ -682,6 +907,22 @@ def _handle_block(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            task = kb.get_task(conn, tid)
+            if (
+                task is not None
+                and str(reason).strip().lower().startswith("review-required:")
+                and _looks_like_functionality_tracking_task(task.title, task.body)
+            ):
+                comments = kb.list_comments(conn, tid)
+                evidence_text = "\n".join([str(reason)] + [c.body for c in comments])
+                if not _text_has_three_layer_tracking_evidence(evidence_text):
+                    return tool_error(
+                        "kanban_block blocked: review-required handoffs for "
+                        "deterministic functionality changes require Matrix, "
+                        "Kanban, and GitHub linkage evidence in the block "
+                        "reason or prior kanban_comment. Kanban-only tracking "
+                        "is insufficient for this class of work."
+                    )
             ok = kb.block_task(
                 conn, tid,
                 reason=reason,
@@ -817,8 +1058,18 @@ def _handle_create(args: dict, **kw) -> str:
     # CLI / dashboard paths and on legacy hosts that don't set the env.
     session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
-    workspace_kind = args.get("workspace_kind") or "scratch"
+    # Resolve workspace. If the caller passed one explicitly, honor it.
+    # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)
+    # inherits its own running task's workspace, so a worker editing a
+    # dir:/worktree project that spawns a follow-up child keeps the child
+    # in that project instead of a throwaway scratch dir. Orchestrators
+    # (kanban toolset, no HERMES_KANBAN_TASK) and CLI/dashboard callers
+    # fall back to scratch as before. Explicit None path stays None.
+    workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    _inherit_workspace = workspace_kind is None and workspace_path is None
+    if workspace_kind is None:
+        workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:
         return tool_error(bool_error)
@@ -833,6 +1084,10 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"skills must be a list of skill names, got {type(skills).__name__}"
         )
+    goal_mode, goal_bool_error = _parse_bool_arg(args, "goal_mode")
+    if goal_bool_error:
+        return tool_error(goal_bool_error)
+    goal_max_turns = args.get("goal_max_turns")
     if isinstance(parents, str):
         parents = [parents]
     if not isinstance(parents, (list, tuple)):
@@ -843,6 +1098,15 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Inherit the spawning worker's own task workspace when the
+            # caller didn't specify one (see resolution note above).
+            if _inherit_workspace:
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.workspace_kind:
+                        workspace_kind = _self_task.workspace_kind
+                        workspace_path = _self_task.workspace_path
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -860,6 +1124,10 @@ def _handle_create(args: dict, **kw) -> str:
                     if max_runtime_seconds is not None else None
                 ),
                 skills=skills,
+                goal_mode=goal_mode,
+                goal_max_turns=(
+                    int(goal_max_turns) if goal_max_turns is not None else None
+                ),
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
@@ -1003,9 +1271,10 @@ KANBAN_LIST_SCHEMA = {
     "description": (
         "List Kanban task summaries so an orchestrator profile can discover "
         "work to route. Supports the same core filters as the CLI: assignee, "
-        "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Bounded to 50 rows by default, 200 max, with truncation "
+        "status, tenant, include_archived, detail, and limit. Returns compact "
+        "rows with ids, title, status, assignee, priority, and dependency "
+        "counts; pass detail=true only when you need workspace paths, timestamps, "
+        "or parent/child id arrays. Bounded to 20 rows by default, 100 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
         "this tool."
@@ -1033,9 +1302,13 @@ KANBAN_LIST_SCHEMA = {
                 "type": "boolean",
                 "description": "Include archived tasks. Defaults to false.",
             },
+            "detail": {
+                "type": "boolean",
+                "description": "Return verbose per-task metadata such as workspace paths, timestamps, and parent/child id arrays. Defaults to false to keep active context small.",
+            },
             "limit": {
                 "type": "integer",
-                "description": "Optional maximum rows to return (default 50, max 200).",
+                "description": "Optional maximum rows to return (default 20, max 100).",
             },
             "board": _board_schema_prop(),
         },
@@ -1083,7 +1356,11 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. Deterministic "
+                    "functionality changes must include "
+                    "metadata.three_layer_tracking with non-empty "
+                    "matrix, kanban, and github evidence; Kanban-only "
+                    "tracking is insufficient for review-ready handoffs."
                 ),
             },
             "result": {
@@ -1342,6 +1619,29 @@ KANBAN_CREATE_SCHEMA = {
                     "task, ['github-code-review'] for a reviewer task. "
                     "The names must match skills installed on the "
                     "assignee's profile."
+                ),
+            },
+            "goal_mode": {
+                "type": "boolean",
+                "description": (
+                    "Run the dispatched worker in a goal loop. When true, "
+                    "after each turn an auxiliary judge checks the worker's "
+                    "response against this card's title/body; if the work "
+                    "isn't done and budget remains, the worker keeps going "
+                    "in the same session until the judge agrees it's "
+                    "complete (or the goal-turn budget is exhausted, which "
+                    "blocks the task for human review). Use this for "
+                    "open-ended cards where one shot rarely finishes the "
+                    "work. Defaults to false (classic single-shot worker)."
+                ),
+            },
+            "goal_max_turns": {
+                "type": "integer",
+                "description": (
+                    "Turn budget for goal_mode workers. Caps how many "
+                    "continuation turns the worker may take before the task "
+                    "is blocked for review. Ignored unless goal_mode is "
+                    "true. Defaults to the goal-engine default (20)."
                 ),
             },
             "board": _board_schema_prop(),

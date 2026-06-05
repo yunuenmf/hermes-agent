@@ -17,7 +17,9 @@ metadata:
 
 Hermes setups vary widely. Some users run a single profile that does everything; some run a small fleet (`docker-worker`, `cron-worker`); some run a curated specialist team they've named themselves. There is **no default specialist roster** — the orchestrator skill does not know what profiles exist on this machine.
 
-Before fanning out, you must ground the decomposition in the profiles that actually exist. The dispatcher silently fails to spawn unknown assignee names — it doesn't autocorrect, doesn't suggest, doesn't fall back. So a card assigned to `researcher` on a setup that only has `docker-worker` just sits in `ready` forever.
+Before fanning out, you must ground the decomposition in the profiles that actually exist. The dispatcher silently fails to spawn unknown assignee names — it doesn't autocorrect, doesn't suggest, doesn't fall back. So a card assigned to `researcher` on a setup that only has `docker-worker` remains `working`/queued (internal alias `ready`) forever.
+
+For project-structured communication, status reports should use the generic canonical pair `Self status:` and `Lineage status:`. `Lineage status` is structural parent/child responsibility under a profile, not the same as the task dependency graph you create with `parents=[...]`. Do not use legacy `Blocker status:` / `NOT BLOCKED`, and do not replace the generic pair with role-specific labels such as `Coordinator status:`. Prefer deterministic helper output from `python scripts/render_status_lines.py --self ... --lineage-count ...` when available.
 
 **Step 0: discover available profiles before planning.**
 
@@ -58,10 +60,12 @@ Your job description says "route, don't execute." The rules that enforce that:
 
 - **Do not execute the work yourself.** Your restricted toolset usually doesn't even include terminal/file/code/web for implementation. If you find yourself "just fixing this quickly" — stop and create a task for the right specialist.
 - **For any concrete task, create a Kanban task and assign it.** Every single time.
+- **For deterministic functionality changes, create/require GitHub tracking too.** Features, behavior changes, migrations, safety gates, guards, automation, and code-affecting work must not be Kanban-only. Link the Kanban task to a GitHub issue/PR; if the implementation repo has Issues disabled, use the project repo issue and link it from implementation PRs/tasks. Matrix updates to Yunuen should mention the issue/PR/task when relevant.
 - **Split multi-lane requests before creating cards.** A user prompt can contain several independent workstreams. Extract those lanes first, then create one card per lane instead of bundling unrelated work into a single implementer card.
 - **Run independent lanes in parallel.** If two cards do not need each other's output, leave them unlinked so the dispatcher can fan them out. Link only true data dependencies.
 - **Never create dependent work as independent ready cards.** If a card must wait for another card, pass `parents=[...]` in the original `kanban_create` call. Do not create it first and link it later, and do not rely on prose like "wait for T1" inside the body.
-- **A comment on a blocked task is not a dispatch request.** If a blocked worker must contact Yunuen or perform any other action, you must either send the message yourself, create a new assigned contact/action task, or explicitly unblock/re-dispatch the blocked task with the exact instruction. A plain comment is only recorded context and does not wake the worker; do not auto-unblock human blockers just to deliver a message.
+- **Talk directly; do not create contact tasks merely to talk.** Internal profile-to-profile discussion belongs on direct command/internal-message paths such as `hermes -p <profile> chat -q '<question>' --toolsets safe` or a structured `send_message` / `hermes send` note to a validated private profile room. Kanban is for durable work, dependencies, blockers, evidence, review, and post-discussion outcomes.
+- **A comment on a blocked task is not a dispatch request.** If a blocked worker must contact Yunuen or perform any other action, you must either send the message yourself through an appropriate direct channel, create a new assigned work/action task only when durable work is required, or explicitly unblock/re-dispatch the blocked task with the exact instruction. A plain comment is only recorded context and does not wake the worker; do not auto-unblock human blockers just to deliver a message.
 - **If no specialist fits the available profiles, ask the user which profile to create or which existing profile to use.** Do not invent profile names; the dispatcher will silently drop unknown assignees.
 - **Decompose, route, and summarize — that's the whole job.**
 
@@ -173,7 +177,7 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 ## Pitfalls
 
-**Inventing profile names that don't exist.** The dispatcher silently fails to spawn unknown assignees — the card just sits in `ready` forever. Always assign to a profile from your Step 0 discovery; ask the user if you're unsure.
+**Inventing profile names that don't exist.** The dispatcher silently fails to spawn unknown assignees — the card remains `working`/queued (internal alias `ready`) forever. Always assign to a profile from your Step 0 discovery; ask the user if you're unsure.
 
 **Bundling independent lanes into one card.** If the user asks for two independent outcomes, create two cards. Example: "fix blockers and check model variants" is not one fixer task; create a fixer/engineer card for the fixes and an explorer/researcher card for the variant check, then optionally gate review on both.
 
@@ -189,11 +193,35 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 **Tenant inheritance.** If `HERMES_TENANT` is set in your env, pass `tenant=os.environ.get("HERMES_TENANT")` on every `kanban_create` call so child tasks stay in the same namespace.
 
+## Goal-mode cards (persistent workers)
+
+By default a dispatched worker gets **one shot** at its card: it does its work, calls `kanban_complete`/`kanban_block`, and exits. For open-ended cards where one turn rarely finishes the job, pass `goal_mode=True` to wrap that worker in a Ralph-style goal loop — the same engine behind the `/goal` slash command:
+
+```python
+kanban_create(
+    title="Translate the full docs site to French",
+    body="Acceptance: every page translated, no English left, links intact.",
+    assignee="<translator-profile>",
+    goal_mode=True,        # judge re-checks the card after each turn
+    goal_max_turns=15,     # optional budget (default 20)
+)["task_id"]
+```
+
+How it behaves:
+- After each worker turn, an auxiliary judge evaluates the worker's response against the card's **title + body** (treated as the acceptance criteria).
+- Not done + budget remains → the worker keeps going **in the same session** (full context retained — not a fresh respawn).
+- Worker calls `kanban_complete`/`kanban_block` itself → loop stops, normal lifecycle.
+- Budget exhausted without completion → the card is **blocked** for human review (sticky), never a silent exit.
+
+When to use it: long, multi-step, or "keep going until X is true" cards. When NOT to: cheap one-shot cards (translation of a single string, a quick lookup) — the judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures.
+
+Write the body as **explicit acceptance criteria** — the judge is only as good as the goal text. "Translate the README" is weaker than "Translate every section of the README to French; no English sentences remain."
+
 ## Recovering stuck workers
 
 When a worker profile keeps crashing, hallucinating, or getting blocked by its own mistakes (usually: wrong model, missing skill, broken credential), the kanban dashboard flags the task with a ⚠ badge and opens a **Recovery** section in the drawer. Three primary actions:
 
-1. **Reclaim** (or `hermes kanban reclaim <task_id>`) — abort the running worker immediately and reset the task to `ready`. The existing claim TTL is ~15 min; this is the fast path out.
+1. **Reclaim** (or `hermes kanban reclaim <task_id>`) — abort the running worker immediately and reset the task to `working`/queued (internal alias `ready`). The existing claim TTL is ~15 min; this is the fast path out.
 2. **Reassign** (or `hermes kanban reassign <task_id> <new-profile> --reclaim`) — switch the task to a different profile (one that exists on this setup) and let the dispatcher pick it up with a fresh worker.
 3. **Change profile model** — the dashboard prints a copy-paste hint for `hermes -p <profile> model` since profile config lives on disk; edit it in a terminal, then Reclaim to retry with the new model.
 

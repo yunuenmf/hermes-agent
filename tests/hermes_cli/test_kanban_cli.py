@@ -82,6 +82,52 @@ def test_run_slash_no_args_shows_usage(kanban_home):
     assert "create" in out.lower() or "subcommand" in out.lower() or "action" in out.lower()
 
 
+
+
+def test_run_slash_canonical_backup_dry_run_and_rollback_proof(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        kb.create_task(conn, title="child", assignee="bob", parents=[parent])
+
+    artifact_dir = tmp_path / "artifacts"
+    out = kc.run_slash(
+        f"canonical-backup --output-dir {artifact_dir} --timestamp 20260604T020304Z"
+    )
+    assert "backup created" in out.lower()
+    backup_path = artifact_dir / "kanban-20260604T020304Z.sqlite3"
+    assert backup_path.exists()
+    assert (artifact_dir / "kanban-20260604T020304Z.metadata.json").exists()
+
+    report_path = artifact_dir / "dry-run.json"
+    out = kc.run_slash(f"canonical-dry-run --output {report_path}")
+    assert "dry-run complete" in out.lower()
+    assert "No live DB mutation".lower() in out.lower()
+    assert report_path.exists()
+
+    restore_dir = tmp_path / "restore"
+    out = kc.run_slash(f"canonical-rollback-proof {backup_path} --temp-dir {restore_dir}")
+    assert "rollback proof complete" in out.lower()
+    assert "OK:       True" in out
+
+
+def test_run_slash_canonical_backup_all_boards(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="default", assignee="alice")
+    kb.create_board("project-a", name="Project A")
+    with kb.connect(board="project-a") as conn:
+        kb.create_task(conn, title="project", assignee="bob")
+
+    artifact_dir = tmp_path / "all-artifacts"
+    out = kc.run_slash(
+        f"canonical-backup --all-boards --output-dir {artifact_dir} --timestamp 20260604T030405Z"
+    )
+
+    assert "all boards" in out.lower()
+    assert "Boards:   2" in out
+    assert (artifact_dir / "default" / "kanban-20260604T030405Z.sqlite3").exists()
+    assert (artifact_dir / "project-a" / "kanban-20260604T030405Z.sqlite3").exists()
+
+
 def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("create 'ship feature' --assignee alice")
     assert "Created" in out

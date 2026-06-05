@@ -265,7 +265,14 @@ def test_list_filters_tasks(monkeypatch, worker_env):
     assert d["count"] == 2
     assert d["tasks"][0]["title"] == "alpha"
     assert d["tasks"][0]["parent_count"] == 0
+    assert "workspace_path" not in d["tasks"][0]
     assert b not in ids
+
+    detail_out = kt._handle_list({"assignee": "factory", "status": "ready", "limit": 10, "detail": True})
+    detail = json.loads(detail_out)
+    assert detail["detail"] is True
+    assert "workspace_path" in detail["tasks"][0]
+    assert "parents" in detail["tasks"][0]
 
     tenant_out = kt._handle_list({
         "assignee": "factory",
@@ -288,6 +295,32 @@ def test_list_rejects_bad_limit(monkeypatch, worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_list({"limit": "nope"})).get("error")
     assert json.loads(kt._handle_list({"limit": 0})).get("error")
+    assert "<= 100" in json.loads(kt._handle_list({"limit": 101})).get("error", "")
+
+
+def test_list_default_limit_is_small_and_reports_truncation(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        for i in range(25):
+            kb.create_task(conn, title=f"bulk {i}", assignee="factory")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    d = json.loads(kt._handle_list({"assignee": "factory", "status": "ready"}))
+    assert d["limit"] == 20
+    assert d["count"] == 20
+    assert d["truncated"] is True
+    assert d["next_limit"] == 40
+
+
+def test_list_rejects_bad_detail(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from tools import kanban_tools as kt
+    out = kt._handle_list({"detail": "sometimes"})
+    assert "detail must be" in json.loads(out).get("error", "")
 
 
 def test_list_parses_include_archived_string_false(monkeypatch, worker_env):
@@ -358,6 +391,153 @@ def test_complete_happy_path(worker_env):
         assert run.metadata == {"files": 2}
     finally:
         conn.close()
+
+
+def test_functionality_tracking_guard_rejects_kanban_only_completion(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "implement deterministic status functionality guard",
+                "Code-affecting behavior change; Kanban-only tracking is insufficient and GitHub/Matrix linkage is required.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "implemented guard without linkage evidence",
+        "metadata": {"changed_files": ["tools/kanban_tools.py"]},
+    })
+    err = json.loads(out).get("error", "")
+    assert "three-layer tracking evidence" in err
+    assert "missing: matrix, kanban, github" in err
+    assert "Kanban-only tracking is insufficient" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
+def test_functionality_tracking_guard_accepts_three_layer_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "implement deterministic status functionality guard",
+                "Code-affecting behavior change; review-ready handoff must link Matrix, Kanban, and GitHub.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "implemented guard with linkage evidence",
+        "metadata": {
+            "changed_files": ["tools/kanban_tools.py"],
+            "three_layer_tracking": {
+                "matrix": "Matrix update mentions task t_example and issue #28",
+                "kanban": worker_env,
+                "github": "https://github.com/yunuenmf/hermes-maintenance/issues/28",
+            },
+        },
+    })
+    assert json.loads(out)["ok"] is True
+
+
+def test_functionality_tracking_guard_catches_common_feature_terms(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "add feature: OAuth login",
+                "User-facing implementation work.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({"summary": "feature done"})
+    err = json.loads(out).get("error", "")
+    assert "three-layer tracking evidence" in err
+
+
+def test_review_required_block_requires_three_layer_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "migration: require tracking evidence",
+                "Safety gate implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_block({"reason": "review-required: implementation ready"})
+    err = json.loads(out).get("error", "")
+    assert "review-required handoffs" in err
+    assert "Matrix, Kanban, and GitHub" in err
+
+
+def test_review_required_block_accepts_comment_linkage_evidence(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET title = ?, body = ? WHERE id = ?",
+            (
+                "safety gate: require tracking evidence",
+                "Guard implementation.",
+                worker_env,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    comment = kt._handle_comment({
+        "task_id": worker_env,
+        "body": (
+            "review-required handoff: Matrix update sent; "
+            f"Kanban task {worker_env}; GitHub issue "
+            "https://github.com/yunuenmf/hermes-maintenance/issues/28"
+        ),
+    })
+    assert json.loads(comment)["ok"] is True
+
+    out = kt._handle_block({"reason": "review-required: implementation ready"})
+    assert json.loads(out)["ok"] is True
 
 
 def test_complete_metadata_round_trips_through_show(worker_env):
@@ -575,7 +755,9 @@ def test_complete_phantom_card_message_advertises_retry(worker_env):
     # rejection did not mutate state, so the worker's retry can land.
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "running"
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "running"
     finally:
         conn.close()
 
@@ -840,6 +1022,83 @@ def test_create_happy_path(worker_env):
         child = kb.get_task(conn, d["task_id"])
         assert child.title == "child task"
         assert child.assignee == "peer"
+    finally:
+        conn.close()
+
+
+def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
+    """A worker scoped to a dir: task that spawns a child without a
+    workspace arg inherits the dir, not scratch (so follow-up code-gen
+    lands in the same project)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    proj = "/home/teknium/myproject"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path=proj,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({"title": "follow-up", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "dir"
+        assert child.workspace_path == proj
+    finally:
+        conn.close()
+
+
+def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
+    """An explicit workspace arg overrides worker-task inheritance."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path="/home/teknium/proj",
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({
+        "title": "scratch child", "assignee": "peer",
+        "workspace_kind": "scratch",
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+    finally:
+        conn.close()
+
+
+def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
+    """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
+    scratch — inheritance only applies to task-scoped workers."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    d = json.loads(kt._handle_create({"title": "orch child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
     finally:
         conn.close()
 
@@ -1169,6 +1428,11 @@ def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
     from run_agent import AIAgent
     a = AIAgent(
         api_key="test",
@@ -1191,6 +1455,11 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
 
     from run_agent import AIAgent
     a = AIAgent(
@@ -1392,10 +1661,19 @@ def test_worker_complete_rejects_stale_run_id(worker_env, monkeypatch):
     from hermes_cli import kanban_db as kb
     import hermes_cli.kanban_db as _kb
 
+    # detect_crashed_workers now gates each running task behind a
+    # launch-window grace period (c002668ff) so a freshly-spawned worker
+    # whose PID isn't yet visible on /proc isn't reclaimed. The fixture
+    # creates the task moments before this assertion, so the grace
+    # period (default 30s) would skip the liveness check. Zero it out
+    # for this test — we WANT immediate reclamation here.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
     conn = kb.connect()
     try:
         run1 = kb.latest_run(conn, worker_env)
         kb._set_worker_pid(conn, worker_env, 98765)
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kb.detect_crashed_workers(conn) == [worker_env]
 

@@ -7,7 +7,6 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
-import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -15,6 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
@@ -29,43 +29,30 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
-# SOUL.md before they get injected into the system prompt.
+# Context file scanning — detect prompt injection / promptware in AGENTS.md,
+# .cursorrules, SOUL.md before they get injected into the system prompt.
+#
+# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
+# shared with the memory-tool scanner and the tool-result delimiter system.
+# This module just chooses how to react when a match is found (block-with-
+# placeholder; the actual content never reaches the system prompt).
 # ---------------------------------------------------------------------------
 
-_CONTEXT_THREAT_PATTERNS = [
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
-    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
-    (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-]
-
-_CONTEXT_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
+from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
 def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content."""
-    findings = []
+    """Scan context file content for injection. Returns sanitized content.
 
-    # Check invisible unicode
-    for char in _CONTEXT_INVISIBLE_CHARS:
-        if char in content:
-            findings.append(f"invisible unicode U+{ord(char):04X}")
-
-    # Check threat patterns
-    for pattern, pid in _CONTEXT_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            findings.append(pid)
-
+    Uses the "context" scope from the shared threat-pattern library, which
+    covers classic injection + promptware/C2 patterns + role-play hijack.
+    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
+    applied here — those are too aggressive for a context file in a
+    cloned repo (security research, infra docs).  Content matching is
+    BLOCKED at this layer because the file would otherwise enter the
+    system prompt verbatim and the user has no chance to intervene.
+    """
+    findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
@@ -205,35 +192,30 @@ KANBAN_GUIDANCE = (
     "any file operations. The workspace is yours for this run. Don't modify "
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
-    "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
-    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
-    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
-    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
-    "reclaim re-queues the task as `ready` without penalty (no failure counter "
-    "tick), but you lose your current run's progress.\n"
+    "every few minutes during long subprocesses; skip short tasks. If a task may "
+    "run over 1 hour, heartbeat at least hourly or the dispatcher may reclaim it.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
     "The user will unblock with context and the dispatcher will respawn you.\n"
-    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
-    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
-    "artifacts. `metadata` is machine-readable facts "
-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
-    "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever. "
-    "Exception: if your output is a code change that needs human review "
-    "before counting as merged/done (most coding tasks), drop the "
-    "structured metadata (changed_files / tests_run / diff_path) into a "
-    "`kanban_comment` first, then end with "
-    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
-    "reviewer can approve+unblock or request changes. Reviewing-then-"
-    "completing is more honest than auto-completing work that still needs "
-    "eyes on it.\n"
+    "5. **Complete with structured handoff.** Use `kanban_complete(summary=..., "
+    "metadata=...)` with concrete artifacts and machine-readable facts; never "
+    "store secrets/PII. For deterministic feature, behavior change, migration, "
+    "safety gate, guard, automation, or other code-affecting functionality work, "
+    "metadata must include `three_layer_tracking` evidence with non-empty "
+    "`matrix`, `kanban`, and `github` entries. Kanban-only tracking is "
+    "insufficient for this class of work; if the implementation repo has GitHub "
+    "Issues disabled, use the project repo issue and link it from PRs/tasks. For "
+    "code needing review, put the same Matrix/Kanban/GitHub evidence in "
+    "`kanban_comment` before `kanban_block(reason=\"review-required: ...\")`.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
     "scope-creeping into the next thing.\n"
+    "7. **Talk directly, not through contact tasks.** Use direct commands/internal "
+    "messages (e.g. `hermes -p <profile> chat -q ... --toolsets safe`). "
+    "Do not create Kanban contact tasks merely to ask, notify, or ping another "
+    "profile. Use Kanban for durable work items and outcomes.\n"
     "\n"
     "## Orchestrator mode\n"
     "\n"
@@ -249,8 +231,13 @@ KANBAN_GUIDANCE = (
     "- Do not shell out to `hermes kanban <verb>` for board operations. Use "
     "the `kanban_*` tools — they work across all terminal backends.\n"
     "- Do not complete a task you didn't actually finish. Block it.\n"
+    "- Do not call `clarify`; workers run headless. `kanban_comment` context, "
+    "then `kanban_block(reason=...)` to surface needed input.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right "
     "specialist profile.\n"
+    "- Do not create contact tasks merely to talk to another profile; use direct "
+    "profile commands/internal messaging, then record only durable outcomes on "
+    "Kanban.\n"
     "- Do not call `delegate_task` as a board substitute. `delegate_task` is "
     "for short reasoning subtasks inside your own run; board tasks are for "
     "cross-agent handoffs that outlive one API loop."
@@ -274,6 +261,37 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+
+# Universal "finish the job" guidance — applied to ALL models, not gated
+# by model family.  Addresses two cross-model failure modes:
+#   1. Stopping after a stub: writing a tiny file or running one command
+#      and then ending the turn with a description of the plan instead
+#      of the finished artifact.  (Observed on Opus during a real
+#      Sarasota real-estate build task: 3 API calls, 85-byte file,
+#      one terminal command, finish_reason=stop.)
+#   2. Fabricating output when a real path is blocked.  When `pip` or a
+#      tool fails, some models will synthesize plausible-looking results
+#      (fake addresses, fake JSON, fake numbers) instead of reporting
+#      the blocker.  (Observed on DeepSeek v4-flash on the same task:
+#      pushed through PEP-668 wall, then returned fabricated listings.)
+#
+# Short on purpose.  This block is shipped to every user, every session,
+# in the cached system prompt — token cost is paid once at install and
+# then amortised across all sessions via prefix caching.  Keep it tight.
+TASK_COMPLETION_GUIDANCE = (
+    "# Finishing the job\n"
+    "When the user asks you to build, run, or verify something, the deliverable is "
+    "a working artifact backed by real tool output — not a description of one. "
+    "Do not stop after writing a stub, a plan, or a single command. Keep working "
+    "until you have actually exercised the code or produced the requested result, "
+    "then report what real execution returned.\n"
+    "If a tool, install, or network call fails and blocks the real path, say so "
+    "directly and try an alternative (different package manager, different "
+    "approach, ask the user). NEVER substitute plausible-looking fabricated "
+    "output (made-up data, invented file contents, synthesised API responses) "
+    "for results you couldn't actually produce. Reporting a blocker honestly "
+    "is always better than inventing a result."
+)
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -623,7 +641,7 @@ WSL_ENVIRONMENT_HINT = (
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
-    "vercel_sandbox", "managed_modal",
+    "managed_modal",
 })
 
 
@@ -637,7 +655,6 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "modal": "a Modal sandbox (Linux)",
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
-    "vercel_sandbox": "a Vercel sandbox (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
@@ -751,7 +768,7 @@ def build_environment_hints() -> str:
       and a Windows-only note that `terminal` shells out to bash, not
       PowerShell).
     - For **remote / sandbox** terminal backends (docker, singularity,
-      modal, daytona, ssh, vercel_sandbox): host info is **suppressed**
+      modal, daytona, ssh): host info is **suppressed**
       because the agent's tools can't touch the host — only the backend
       matters. A live probe inside the backend reports its OS, user, $HOME,
       and cwd. Falls back to a static summary if the probe fails.
@@ -781,7 +798,7 @@ def build_environment_hints() -> str:
 
         host_lines.append(f"User home directory: {os.path.expanduser('~')}")
         try:
-            host_lines.append(f"Current working directory: {os.getcwd()}")
+            host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
             pass
 
@@ -827,6 +844,27 @@ def build_environment_hints() -> str:
 
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+
+    # Embedder-supplied environment description. Lets a host that wraps Hermes
+    # (e.g. a sandbox runner / managed platform) explain the environment the
+    # agent is running in — proxy, credential handling, mount layout — without
+    # forking the identity slot (SOUL.md). Read once at prompt-build time, so
+    # it's part of the stable, cache-safe system prompt. The env var is the
+    # build-time/embedder mechanism (set in a container ENV); config.yaml
+    # ``agent.environment_hint`` is the user-facing surface. Env var wins.
+    extra = (os.getenv("HERMES_ENVIRONMENT_HINT") or "").strip()
+    if not extra:
+        try:
+            from hermes_cli.config import load_config
+
+            extra = str(
+                (load_config().get("agent", {}) or {}).get("environment_hint", "")
+            ).strip()
+        except Exception as e:
+            logger.debug("Could not read agent.environment_hint from config: %s", e)
+    if extra:
+        hints.append(extra)
+
     return "\n\n".join(hints)
 
 

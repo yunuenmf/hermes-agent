@@ -63,6 +63,8 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
+    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+               gateway_only=True),
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
@@ -76,15 +78,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session",
-               args_hint="[focus topic]"),
+    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
+               args_hint="[here [N] | focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -121,7 +124,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
-               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+               args_hint="[model] [--provider name] [--global] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
@@ -164,7 +167,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install")),
+               subcommands=("search", "browse", "inspect", "install", "audit")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -181,13 +184,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("fragmentation", "Finalize context-fragmentation recovery and reset this live session",
+               "Tools & Skills", args_hint="finalize-reset [--source PATH] [--note TEXT]",
+               subcommands=("finalize-reset", "live-reset")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
@@ -337,6 +343,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "background",
         "commands",
         "deny",
+        "fragmentation",
         "help",
         "new",
         "profile",
@@ -449,7 +456,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     :func:`hermes_cli.plugins.PluginContext.register_command`. They behave
     like ``CommandDef`` entries for gateway surfacing: they appear in the
     Telegram command menu, in Slack's ``/hermes`` subcommand mapping, and
-    (via :func:`gateway.platforms.discord._register_slash_commands`) in
+    (via :func:`plugins.platforms.discord.adapter._register_slash_commands`) in
     Discord's native slash command picker.
 
     Lookup is lazy so importing this module never forces plugin discovery
@@ -506,6 +513,68 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         if tg_name:
             result.append((tg_name, description))
     return result
+
+
+_TELEGRAM_MENU_PRIORITY = (
+    # Most-typed everyday commands first.
+    "help",
+    "new",
+    "stop",
+    "status",
+    "resume",
+    "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
+    "approve",
+    "deny",
+    "queue",
+    "steer",
+    "background",
+    # Lower-priority but still useful operational built-ins.
+    "reasoning",
+    "usage",
+    "platforms",
+    "platform",
+    "profile",
+    "whoami",
+)
+"""Built-in commands that should stay visible in Telegram's capped menu.
+
+Telegram only displays a small BotCommand menu in practice.  The full Hermes
+registry is still dispatchable when typed manually, but operational commands
+need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    priority = {
+        _sanitize_telegram_name(name): index
+        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (
+                0,
+                priority[item[1][0]],
+                item[0],
+            )
+            if item[1][0] in priority
+            else (
+                1,
+                item[0],
+            ),
+        )
+    ]
 
 
 _CMD_NAME_LIMIT = 32
@@ -721,11 +790,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
-        skill commands omitted due to the cap.
+        commands omitted due to the cap.
     """
-    core_commands = list(telegram_bot_commands())
+    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
+    hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
@@ -737,7 +807,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count
+    return all_commands[:max_commands], hidden_count + hidden_core_count
 
 
 def discord_skill_commands(
@@ -1005,13 +1075,25 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # First pass: high-value aliases. Slack's 50-command cap means aliases
+    # appended after every canonical command can disappear as the registry grows,
+    # but these are documented everyday shorthands and tests require them to stay
+    # first-class native slashes.
+    priority_aliases = {"btw", "bg", "reset", "q"}
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias in priority_aliases:
+                _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Second pass: canonical names (so they win slots over non-priority aliases if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Third pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue

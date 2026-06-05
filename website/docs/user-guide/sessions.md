@@ -4,16 +4,17 @@ title: "Sessions"
 description: "Session persistence, resume, search, management, and per-platform session tracking"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Sessions
 
 Hermes Agent automatically saves every conversation as a session. Sessions enable conversation resume, cross-session search, and full conversation history management.
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Teams, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in:
 
-1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
-2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
+1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search, plus full message history
 
 The SQLite database stores:
 - Session ID, source platform, user ID
@@ -64,6 +65,38 @@ Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
 in the `/sessions` picker.
 :::
+
+### Context Hygiene Runbook
+
+When a gateway or CLI session starts compacting earlier than expected, treat
+active-context size separately from stored-history size:
+
+1. Inspect the active session first (`/status`, `/usage`, or
+   `hermes sessions export` for offline diagnosis). Large `tool` messages,
+   long skills, board listings, logs, and config dumps are the usual causes.
+2. Prefer `/new <short-title>` when the current task has reached a natural
+   boundary or the conversation is polluted with irrelevant tool output. `/new`
+   creates a fresh session ID and leaves the old transcript searchable.
+3. Use `/compress` when the current thread still matters and you need a compact
+   summary to preserve continuity. Compression forks a child session linked to
+   the parent; it does not erase source messages from storage.
+4. Use `hermes sessions delete <id>` only for an explicit deletion request or a
+   clearly abandoned/duplicate session. Export or back up first when in doubt,
+   and do not delete the active user session while someone is still using it.
+5. Use `hermes sessions prune --older-than N` for old ended sessions only. A
+   prune that removes zero rows usually means the pressure is in the active
+   session, not stale history; start `/new` or reduce verbose tool output.
+
+Mitigations for tool-heavy sessions:
+
+- Load linked skill reference files on demand instead of repeatedly loading a
+  large all-in-one skill. `skill_view` returns bounded content by default and
+  reports `content_truncated`; pass `max_content_chars=0` only when the full
+  skill/file is required.
+- Filter Kanban listings by `assignee`, `status`, and `tenant`; rely on the
+  default compact rows and pass `detail=true` only when you need workspace
+  paths, timestamps, or parent/child ID arrays.
+- Prefer file paths plus focused excerpts over full config/log dumps in chat.
 
 ### Session Sources
 
@@ -145,7 +178,7 @@ Session IDs are shown when you exit a CLI session, and can be found with `hermes
 
 When you resume a session, Hermes displays a compact recap of the previous conversation in a styled panel before the input prompt:
 
-<img className="docs-terminal-figure" src="/img/docs/session-recap.svg" alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
+<img className="docs-terminal-figure" src={useBaseUrl('/img/docs/session-recap.svg')} alt="Stylized preview of the Previous Conversation recap panel shown when resuming a Hermes session." />
 <p className="docs-figure-caption">Resume mode shows a compact recap panel with recent user and assistant turns before returning you to the live prompt.</p>
 
 The recap:
@@ -365,7 +398,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/docs/reference/cli-commands#hermes-insights).
+For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
 ## Session Search Tool
 
@@ -488,10 +521,17 @@ Sessions with **active background processes** are never auto-reset, regardless o
 | What | Path | Description |
 |------|------|-------------|
 | SQLite database | `~/.hermes/state.db` | All session metadata + messages with FTS5 |
-| Gateway transcripts | `~/.hermes/sessions/` | JSONL transcripts per session + sessions.json index |
-| Gateway index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs |
+| Gateway messages    | `~/.hermes/state.db`   | SQLite — canonical store for all session messages |
+| Gateway routing index | `~/.hermes/sessions/sessions.json` | Maps session keys to active session IDs (origin metadata, expiry flags) |
 
 The SQLite database uses WAL mode for concurrent readers and a single writer, which suits the gateway's multi-platform architecture well.
+
+:::note Legacy JSONL transcripts
+Sessions created before state.db became canonical may have leftover
+`*.jsonl` files in `~/.hermes/sessions/`. They are no longer written or
+read by Hermes. Safe to delete after verifying the corresponding session
+exists in state.db.
+:::
 
 ### Database Schema
 
