@@ -2004,6 +2004,7 @@ class CreateBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    autonomy_level: Optional[str] = None
     switch: bool = False
 
 
@@ -2012,6 +2013,7 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    autonomy_level: Optional[str] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2054,6 +2056,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             description=payload.description,
             icon=payload.icon,
             color=payload.color,
+            autonomy_level=payload.autonomy_level,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2074,13 +2077,17 @@ def rename_board(slug: str, payload: RenameBoardBody):
         raise HTTPException(status_code=400, detail=str(exc))
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
-    meta = kanban_db.write_board_metadata(
-        normed,
-        name=payload.name,
-        description=payload.description,
-        icon=payload.icon,
-        color=payload.color,
-    )
+    try:
+        meta = kanban_db.write_board_metadata(
+            normed,
+            name=payload.name,
+            description=payload.description,
+            icon=payload.icon,
+            color=payload.color,
+            autonomy_level=payload.autonomy_level,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"board": meta}
 
 

@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -114,6 +115,62 @@ CANONICAL_STATUS_FOR_STORAGE_STATUS = {
 }
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+AUTONOMY_LEVELS = ("Low", "Medium", "High", "Full")
+DEFAULT_AUTONOMY_LEVEL = "Medium"
+AUTONOMY_LEVEL_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "Low": {
+        "summary": "Granular human-reviewed project operation below the current baseline.",
+        "requires_strong_initial_plan": True,
+        "routine_review_required": True,
+        "auto_approves_medium_prompts": False,
+        "github_push_pull_merge_automatic": False,
+        "deployment_requires_approval": True,
+        "contact_yunuen_for": [
+            "medium-risk implementation choices",
+            "GitHub push, PR approval, merge, or user-visible behavior changes",
+            "deployment, credentials, destructive actions, and scope/risk changes",
+        ],
+    },
+    "Medium": {
+        "summary": "Current Hermes baseline autonomy for scoped project work.",
+        "requires_strong_initial_plan": True,
+        "routine_review_required": True,
+        "auto_approves_medium_prompts": False,
+        "github_push_pull_merge_automatic": False,
+        "deployment_requires_approval": True,
+        "contact_yunuen_for": [
+            "decisions currently treated as medium-risk approval prompts",
+            "meaningful scope, architecture, risk, or user-facing behavior changes",
+            "deployment, credentials, destructive actions, and external impossibility",
+        ],
+    },
+    "High": {
+        "summary": "Auto-approve routine Medium approvals and GitHub merge when CI and required review evidence pass; deployment remains gated.",
+        "requires_strong_initial_plan": True,
+        "routine_review_required": False,
+        "auto_approves_medium_prompts": True,
+        "github_push_pull_merge_automatic": True,
+        "deployment_requires_approval": True,
+        "contact_yunuen_for": [
+            "deployment",
+            "credentials, keys, secrets, destructive actions, or unrelated-project impact",
+            "major scope/risk changes or true uncertainty after evidence gathering",
+        ],
+    },
+    "Full": {
+        "summary": "Proceed from a strong initial plan, including deployment only when the approved plan includes it.",
+        "requires_strong_initial_plan": True,
+        "routine_review_required": False,
+        "auto_approves_medium_prompts": True,
+        "github_push_pull_merge_automatic": True,
+        "deployment_requires_approval": False,
+        "contact_yunuen_for": [
+            "credentials, keys, secrets, or external impossibility",
+            "safety-critical/destructive action outside the approved project scope",
+            "deployment not included in the approved plan or a dramatic plan/risk change requiring a new procedure",
+        ],
+    },
+}
 
 # User-facing live status vocabulary.  The storage-level task.status column
 # intentionally keeps the legacy workflow aliases above for migration and DB
@@ -867,6 +924,29 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
+def normalize_autonomy_level(level: Optional[str]) -> str:
+    """Return a canonical project autonomy level.
+
+    Existing boards that predate this field backfill to ``Medium`` because
+    that matches the current Hermes project-operating baseline. Unknown values
+    are rejected instead of silently downgrading authority.
+    """
+    if level is None or str(level).strip() == "":
+        return DEFAULT_AUTONOMY_LEVEL
+    candidate = str(level).strip().lower()
+    for allowed in AUTONOMY_LEVELS:
+        if candidate == allowed.lower():
+            return allowed
+    allowed_str = ", ".join(AUTONOMY_LEVELS)
+    raise ValueError(f"autonomy_level must be one of: {allowed_str}")
+
+
+def autonomy_definition(level: Optional[str]) -> dict[str, Any]:
+    """Return a copy of the policy definition for ``level``."""
+    canonical = normalize_autonomy_level(level)
+    return copy.deepcopy(AUTONOMY_LEVEL_DEFINITIONS[canonical])
+
+
 def read_board_metadata(board: Optional[str] = None) -> dict:
     """Return ``board.json`` contents (or synthesized defaults).
 
@@ -883,6 +963,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        "autonomy_level": DEFAULT_AUTONOMY_LEVEL,
         "created_at": None,
         "archived": False,
     }
@@ -897,6 +978,8 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    meta["autonomy_level"] = normalize_autonomy_level(meta.get("autonomy_level"))
+    meta["autonomy"] = autonomy_definition(meta["autonomy_level"])
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -910,6 +993,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    autonomy_level: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -921,6 +1005,7 @@ def write_board_metadata(
     # Preserve existing DB-derived fields — they get re-computed each
     # read but shouldn't be written into board.json.
     meta.pop("db_path", None)
+    meta.pop("autonomy", None)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)
     if description is not None:
@@ -933,6 +1018,10 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if autonomy_level is not None:
+        meta["autonomy_level"] = normalize_autonomy_level(autonomy_level)
+    else:
+        meta["autonomy_level"] = normalize_autonomy_level(meta.get("autonomy_level"))
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -942,6 +1031,7 @@ def write_board_metadata(
         encoding="utf-8",
     )
     meta["db_path"] = str(kanban_db_path(slug))
+    meta["autonomy"] = autonomy_definition(meta["autonomy_level"])
     return meta
 
 
@@ -953,6 +1043,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    autonomy_level: Optional[str] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -970,6 +1061,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        autonomy_level=autonomy_level,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
