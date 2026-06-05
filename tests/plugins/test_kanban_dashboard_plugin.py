@@ -85,6 +85,39 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_board_crud_endpoints(client):
+    r = client.post(
+        "/api/plugins/kanban/boards",
+        json={"slug": "proj-alpha", "name": "Project Alpha", "autonomy_level": "High"},
+    )
+    assert r.status_code == 200, r.text
+    board = r.json()["board"]
+    assert board["slug"] == "proj-alpha"
+    assert board["name"] == "Project Alpha"
+    assert board["autonomy_level"] == "High"
+    assert board["autonomy"]["auto_approves_medium_prompts"] is True
+
+    r = client.get("/api/plugins/kanban/boards")
+    assert r.status_code == 200
+    boards = {b["slug"]: b for b in r.json()["boards"]}
+    assert boards["proj-alpha"]["autonomy_level"] == "High"
+
+    r = client.patch(
+        "/api/plugins/kanban/boards/proj-alpha",
+        json={"autonomy_level": "Full"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["board"]["autonomy_level"] == "Full"
+    assert r.json()["board"]["autonomy"]["requires_strong_initial_plan"] is True
+
+    r = client.patch(
+        "/api/plugins/kanban/boards/proj-alpha",
+        json={"autonomy_level": "Ultra"},
+    )
+    assert r.status_code == 400
+    assert "autonomy_level" in r.text
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

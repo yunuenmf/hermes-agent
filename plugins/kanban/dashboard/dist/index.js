@@ -24,6 +24,14 @@
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
   const { cn, timeAgo } = SDK.utils;
 
+  const AUTONOMY_LEVELS = ["Low", "Medium", "High", "Full"];
+  const AUTONOMY_SUMMARY = {
+    Low: "Granular human-reviewed project operation below the current baseline.",
+    Medium: "Current Hermes baseline autonomy for scoped project work.",
+    High: "Auto-approve routine Medium approvals and GitHub merge when CI and required review evidence pass; deployment remains gated.",
+    Full: "Proceed from a strong initial plan, stopping only for hard-stops or dramatic plan changes.",
+  };
+
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
   // Fall back to a native <input type="checkbox"> shim so older hosts that
   // predate the design-system rollout still render. The shim normalises
@@ -940,6 +948,20 @@
       });
     }, [loadBoardList, switchBoard, board]);
 
+    const updateBoardMetadata = useCallback(function (slug, patch) {
+      return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).then(function (res) {
+        loadBoardList();
+        return res;
+      }).catch(function (e) {
+        setError(String(e && e.message ? e.message : e));
+        throw e;
+      });
+    }, [loadBoardList]);
+
     const deleteBoard = useCallback(function (slug) {
       if (!slug || slug === "default") return Promise.resolve();
       return SDK.fetchJSON(`${API}/boards/${encodeURIComponent(slug)}`, {
@@ -1004,6 +1026,7 @@
           onSwitch: switchBoard,
           onNewClick: function () { setShowNewBoard(true); },
           onDeleteBoard: deleteBoard,
+          onUpdateBoard: updateBoardMetadata,
         }),
         showNewBoard ? h(NewBoardDialog, {
           onCancel: function () { setShowNewBoard(false); },
@@ -1777,6 +1800,8 @@
     const current = list.find(function (b) { return b.slug === props.board; });
     const currentName = current && current.name ? current.name : props.board;
     const currentTotal = current ? current.total : 0;
+    const currentAutonomy = current && current.autonomy_level ? current.autonomy_level : "Medium";
+    const [savingAutonomy, setSavingAutonomy] = useState(false);
     const hasMultipleBoards = list.length > 1;
 
     // Hide entirely when only the default board exists AND it's empty —
@@ -1813,14 +1838,34 @@
               title: "Boards are independent work streams. Each board has its own tasks, tenants, and assignees.",
             }, selectChangeHandler(function (v) { if (v) props.onSwitch(v); })),
               list.map(function (b) {
+                const level = b.autonomy_level || "Medium";
                 const label = b.total > 0
-                  ? `${b.name || b.slug} · ${b.total}`
-                  : (b.name || b.slug);
+                  ? `${b.name || b.slug} · ${b.total} · ${level}`
+                  : `${b.name || b.slug} · ${level}`;
                 return h(SelectOption, { key: b.slug, value: b.slug }, label);
               }),
             ),
             h("span", { className: "text-xs text-muted-foreground" },
               `${currentTotal || 0} task${currentTotal === 1 ? "" : "s"}`),
+          ),
+        ),
+        h("div", { className: "flex flex-col gap-1" },
+          h(Label, { className: "text-[11px] tracking-wider text-muted-foreground" },
+            tx(t, "autonomy", "Autonomy")),
+          h(Select, Object.assign({
+            value: currentAutonomy,
+            className: "h-8 min-w-[150px]",
+            disabled: savingAutonomy || !current,
+            title: (current && current.autonomy && current.autonomy.summary) || AUTONOMY_SUMMARY[currentAutonomy] || "Project autonomy level",
+          }, selectChangeHandler(function (level) {
+            if (!level || level === currentAutonomy || !props.onUpdateBoard) return;
+            setSavingAutonomy(true);
+            props.onUpdateBoard(props.board, { autonomy_level: level })
+              .finally(function () { setSavingAutonomy(false); });
+          })),
+            AUTONOMY_LEVELS.map(function (level) {
+              return h(SelectOption, { key: level, value: level }, level);
+            }),
           ),
         ),
         h("div", { className: "flex-1" }),
@@ -1854,6 +1899,7 @@
     const [name, setName] = useState("");
     const [description, setDescription] = useState("");
     const [icon, setIcon] = useState("");
+    const [autonomyLevel, setAutonomyLevel] = useState("Medium");
     const [switchTo, setSwitchTo] = useState(true);
     const [submitting, setSubmitting] = useState(false);
     const [err, setErr] = useState(null);
@@ -1878,6 +1924,7 @@
         name: name.trim() || autoName || undefined,
         description: description.trim() || undefined,
         icon: icon.trim() || undefined,
+        autonomy_level: autonomyLevel,
         switch: switchTo,
       }).catch(function (e) {
         setErr(String(e && e.message ? e.message : e));
@@ -1943,6 +1990,20 @@
               placeholder: "📦",
               className: "h-8 w-24",
             }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, tx(t, "autonomy", "Autonomy level")),
+            h(Select, Object.assign({
+              value: autonomyLevel,
+              className: "h-8",
+              title: AUTONOMY_SUMMARY[autonomyLevel] || "Project autonomy level",
+            }, selectChangeHandler(setAutonomyLevel)),
+              AUTONOMY_LEVELS.map(function (level) {
+                return h(SelectOption, { key: level, value: level }, `${level} — ${AUTONOMY_SUMMARY[level]}`);
+              }),
+            ),
+            h("div", { className: "text-[11px] text-muted-foreground" },
+              AUTONOMY_SUMMARY[autonomyLevel]),
           ),
           h("label", { className: "flex items-center gap-2 text-xs" },
             h(Checkbox, {

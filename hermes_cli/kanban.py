@@ -268,6 +268,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    b_create.add_argument("--autonomy-level", default=None, choices=kb.AUTONOMY_LEVELS,
+                          help="Project autonomy level: Low, Medium, High, or Full (default: Medium)")
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -303,6 +305,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("slug")
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
+
+    b_set_autonomy = boards_sub.add_parser(
+        "set-autonomy",
+        help="Set the project autonomy level for a board",
+    )
+    b_set_autonomy.add_argument("slug")
+    b_set_autonomy.add_argument("level", choices=kb.AUTONOMY_LEVELS,
+                                help="Low, Medium, High, or Full")
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -1158,6 +1168,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "set-autonomy":
+        return _cmd_boards_set_autonomy(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1193,7 +1205,7 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     if not boards:
         print("(no boards — create one with `hermes kanban boards create <slug>`)")
         return 0
-    print(f"{'':2s}  {'SLUG':24s}  {'NAME':28s}  COUNTS")
+    print(f"{'':2s}  {'SLUG':24s}  {'NAME':28s}  {'AUTONOMY':8s}  COUNTS")
     for b in boards:
         marker = "●" if b["is_current"] else " "
         counts = b["counts"] or {}
@@ -1204,7 +1216,8 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
         name = b.get("name") or ""
         if b.get("archived"):
             name += " [archived]"
-        print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {counts_str}")
+        autonomy = b.get("autonomy_level", kb.DEFAULT_AUTONOMY_LEVEL)
+        print(f"{marker:2s}  {b['slug']:24s}  {name:28s}  {autonomy:8s}  {counts_str}")
     print()
     print(f"Current board: {current}")
     if len(boards) > 1:
@@ -1229,10 +1242,12 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         icon=args.icon,
         color=args.color,
         default_workdir=args.default_workdir,
+        autonomy_level=args.autonomy_level,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
     print(f"  Display name: {meta.get('name', '')}")
+    print(f"  Autonomy:     {meta.get('autonomy_level', kb.DEFAULT_AUTONOMY_LEVEL)}")
     print(f"  DB path:      {meta['db_path']}")
     if getattr(args, "switch", False):
         kb.set_current_board(meta["slug"])
@@ -1293,6 +1308,10 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}")
+    print(f"  Autonomy:     {meta.get('autonomy_level', kb.DEFAULT_AUTONOMY_LEVEL)}")
+    autonomy = meta.get("autonomy") or {}
+    if autonomy.get("summary"):
+        print(f"  Autonomy summary: {autonomy['summary']}")
     print(f"  Tasks:        {total} total"
           + (f" ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})"
              if counts else ""))
@@ -1330,6 +1349,28 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_autonomy(args: argparse.Namespace) -> int:
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"kanban boards set-autonomy: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"kanban boards set-autonomy: board {args.slug!r} does not exist",
+              file=sys.stderr)
+        return 1
+    try:
+        meta = kb.write_board_metadata(normed, autonomy_level=args.level)
+    except ValueError as exc:
+        print(f"kanban boards set-autonomy: {exc}", file=sys.stderr)
+        return 2
+    print(f"Board {normed!r} autonomy set to {meta['autonomy_level']}.")
+    summary = (meta.get("autonomy") or {}).get("summary")
+    if summary:
+        print(f"  {summary}")
     return 0
 
 
