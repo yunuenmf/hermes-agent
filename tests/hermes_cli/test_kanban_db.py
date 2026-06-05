@@ -130,6 +130,86 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+
+def test_stale_connection_refuses_write_after_db_replacement(tmp_path):
+    """A long-lived writer must not write through a descriptor to a replaced DB.
+
+    This models Board Safety installing a repaired live DB while an old gateway
+    process still has an open connection to the previous inode. Reads may still
+    work on that stale descriptor, but any write must fail closed until the
+    process closes and reopens the board.
+    """
+    db_path = tmp_path / "kanban.db"
+    original = kb.connect(db_path)
+    kb.create_task(original, title="old inode task")
+
+    replacement = tmp_path / "replacement.db"
+    replacement_conn = kb.connect(replacement)
+    kb.create_task(replacement_conn, title="repaired inode task")
+    replacement_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    replacement_conn.close()
+    os.replace(replacement, db_path)
+
+    with pytest.raises(sqlite3.DatabaseError, match="refusing stale Kanban DB write"):
+        kb.create_task(original, title="must not land on deleted inode")
+    original.close()
+
+    reopened = kb.connect(db_path)
+    try:
+        created_id = kb.create_task(reopened, title="fresh writer ok")
+        created_task = kb.get_task(reopened, created_id)
+        assert created_task is not None
+        assert created_task.title == "fresh writer ok"
+        titles = {task.title for task in kb.list_tasks(reopened)}
+        assert "repaired inode task" in titles
+        assert "old inode task" not in titles
+    finally:
+        reopened.close()
+
+
+def test_repair_generation_marker_invalidates_initialized_cache(tmp_path, monkeypatch):
+    """Advancing the repair marker forces a full health guard on next connect."""
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path)
+    conn.close()
+    resolved = str(db_path.resolve())
+    assert resolved in kb._INITIALIZED_PATHS
+
+    marker = tmp_path / "kanban.db.repair-generation"
+    marker.write_text("repair-1", encoding="utf-8")
+
+    original_guard = kb._guard_existing_db_is_healthy
+    cache_state_seen: list[bool] = []
+
+    def recording_guard(path: Path) -> None:
+        cache_state_seen.append(str(path.resolve()) in kb._INITIALIZED_PATHS)
+        original_guard(path)
+
+    monkeypatch.setattr(kb, "_guard_existing_db_is_healthy", recording_guard)
+    conn = kb.connect(db_path)
+    conn.close()
+
+    assert cache_state_seen == [False]
+    assert resolved in kb._INITIALIZED_PATHS
+
+
+def test_reopened_connection_can_write_after_repair_marker(tmp_path):
+    """Post-repair write proof: close old handle, advance marker, reopen, write."""
+    db_path = tmp_path / "kanban.db"
+    conn = kb.connect(db_path)
+    conn.close()
+
+    (tmp_path / "kanban.db.repair-generation").write_text("repair-complete", encoding="utf-8")
+
+    fresh = kb.connect(db_path)
+    try:
+        task_id = kb.create_task(fresh, title="post-repair controlled write")
+        assert task_id.startswith("t_")
+        row = fresh.execute("PRAGMA integrity_check").fetchone()
+        assert row[0] == "ok"
+    finally:
+        fresh.close()
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 
@@ -2550,6 +2630,9 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
+        # kanban_db._sqlite_connect now passes its own connection subclass via
+        # factory=; this test needs a WAL-blocking subclass instead.
+        kwargs.pop("factory", None)
         return real_connect(
             *args, factory=_WalBlockingConnection, **kwargs
         )

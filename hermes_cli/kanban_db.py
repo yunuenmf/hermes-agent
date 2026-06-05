@@ -1485,9 +1485,20 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+# Path -> live-file generation that was proven healthy and schema-initialized.
+# The generation intentionally tracks inode/device plus an operator repair marker,
+# not mtime/size, so ordinary WAL writes do not force every future connection to
+# run a full integrity check. Replacing the main DB file or advancing the repair
+# marker invalidates the per-process init/health cache.
+_INITIALIZED_GENERATIONS: dict[str, tuple[Any, ...]] = {}
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
+_REPAIR_GENERATION_FILENAMES = (
+    "{name}.repair-generation",
+    "{name}.repair-marker",
+    ".{name}.repair-generation",
+)
 
 
 def _resolve_busy_timeout_ms() -> int:
@@ -1508,6 +1519,140 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
+def _repair_generation_token(path: Path) -> tuple[Any, ...]:
+    """Return a stable token for operator repair/replacement markers.
+
+    Board repair tools can advance ``kanban.db.repair-generation`` (or one of
+    the compatibility names below) after installing a repaired DB. Long-lived
+    gateway/dashboard processes include this token in their process-local cache
+    key so the next connect runs the full header/integrity/schema guard even if
+    the replacement reused the same pathname.
+    """
+    parent = path.parent
+    tokens: list[tuple[str, int, int, str]] = []
+    for template in _REPAIR_GENERATION_FILENAMES:
+        marker = parent / template.format(name=path.name)
+        try:
+            stat = marker.stat()
+            data = marker.read_bytes()[:512]
+        except OSError:
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        tokens.append((marker.name, stat.st_mtime_ns, stat.st_size, digest))
+    return tuple(tokens)
+
+
+def _db_file_generation(path: Path) -> tuple[Any, ...]:
+    """Return the live DB generation used for cache/stale-handle checks."""
+    try:
+        resolved = path.resolve()
+        stat = resolved.stat()
+        file_token: tuple[Any, ...] = (stat.st_dev, stat.st_ino)
+    except OSError:
+        resolved = path
+        file_token = (None, None)
+    return file_token + (_repair_generation_token(resolved),)
+
+
+def _quarantine_stale_wal_sidecars(path: Path, reason_token: str) -> None:
+    """Move WAL/SHM sidecars out of the way after DB replacement.
+
+    SQLite pairs a WAL file with the main DB using header salts, but replacing
+    only ``kanban.db`` while stale ``kanban.db-wal`` / ``kanban.db-shm`` files
+    remain at the pathname is precisely the unsafe repair shape seen in the
+    recurring corruption incident. On a detected generation boundary, preserve
+    those sidecars as evidence instead of letting the next fresh connection
+    replay or lock against them.
+    """
+    parent = path.parent
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    for suffix in ("-wal", "-shm"):
+        sidecar = parent / (path.name + suffix)
+        try:
+            if not sidecar.exists():
+                continue
+            target = parent / f"{path.name}{suffix}.stale-{reason_token}-{timestamp}.bak"
+            counter = 1
+            while target.exists():
+                target = parent / f"{path.name}{suffix}.stale-{reason_token}-{timestamp}.{counter}.bak"
+                counter += 1
+            sidecar.replace(target)
+        except OSError as exc:
+            _log.warning("could not quarantine stale Kanban SQLite sidecar %s: %s", sidecar, exc)
+
+
+def _refresh_initialized_generation(path: Path) -> tuple[str, tuple[Any, ...]]:
+    """Invalidate per-path health/init cache when the live DB generation changes."""
+    resolved = str(path.resolve())
+    generation = _db_file_generation(path)
+    previous = _INITIALIZED_GENERATIONS.get(resolved)
+    if previous is not None and previous != generation:
+        _INITIALIZED_PATHS.discard(resolved)
+        _INITIALIZED_GENERATIONS.pop(resolved, None)
+        _quarantine_stale_wal_sidecars(path, "generation-change")
+        # Sidecar quarantine can itself change how SQLite opens the DB; keep the
+        # returned generation aligned with the main file after evidence capture.
+        generation = _db_file_generation(path)
+    return resolved, generation
+
+
+def _remember_initialized_generation(resolved: str, generation: tuple[Any, ...]) -> None:
+    _INITIALIZED_PATHS.add(resolved)
+    _INITIALIZED_GENERATIONS[resolved] = generation
+
+
+def invalidate_cached_db_state(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> None:
+    """Clear process-local Kanban DB health/init cache for one path.
+
+    Repair tooling and long-lived runtimes can call this after a board DB is
+    replaced. It does not touch the database file; it only ensures the next
+    ``connect()`` performs the full header, integrity, WAL, and schema guard.
+    """
+    path = db_path if db_path is not None else kanban_db_path(board=board)
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    with _INIT_LOCK:
+        _INITIALIZED_PATHS.discard(resolved)
+        _INITIALIZED_GENERATIONS.pop(resolved, None)
+
+
+class KanbanConnection(sqlite3.Connection):
+    """SQLite connection that refuses writes after live DB replacement."""
+
+    _hermes_kanban_path: Optional[Path] = None
+    _hermes_kanban_generation: Optional[tuple[Any, ...]] = None
+
+    def _hermes_assert_current_for_sql(self, sql: str) -> None:
+        head = (sql or "").lstrip().split(None, 1)[0].upper() if sql else ""
+        read_only = head in {"", "SELECT", "WITH", "PRAGMA", "EXPLAIN"}
+        if read_only:
+            return
+        path = getattr(self, "_hermes_kanban_path", None)
+        generation = getattr(self, "_hermes_kanban_generation", None)
+        if path is None or generation is None:
+            return
+        current = _db_file_generation(path)
+        if current != generation:
+            raise sqlite3.DatabaseError(
+                "refusing stale Kanban DB write: live database generation changed "
+                f"for {path}; close and reopen the connection before writing"
+            )
+
+    def execute(self, sql: str, parameters: Iterable[Any] = (), /):  # type: ignore[override]
+        self._hermes_assert_current_for_sql(sql)
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters, /):  # type: ignore[override]
+        self._hermes_assert_current_for_sql(sql)
+        return super().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /):  # type: ignore[override]
+        self._hermes_assert_current_for_sql(sql_script)
+        return super().executescript(sql_script)
+
+
 def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting."""
     busy_timeout_ms = _resolve_busy_timeout_ms()
@@ -1515,6 +1660,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
         str(path),
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        factory=KanbanConnection,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
@@ -1789,10 +1935,20 @@ def connect(
         # Full integrity probe — catches corruption past the header (malformed
         # pages, broken internal metadata). Cached per-path after first success
         # via _INITIALIZED_PATHS so it only runs once per process per path.
+        resolved, generation = _refresh_initialized_generation(path)
         _guard_existing_db_is_healthy(path)
-        resolved = str(path.resolve())
+        # Re-read after a healthy first-open may have created a fresh zero-byte
+        # database and assigned it a real inode. This is the generation the
+        # returned connection must continue to see before any later write.
+        resolved, generation = _refresh_initialized_generation(path)
         conn = _sqlite_connect(path)
+        # sqlite3.connect() creates a missing fresh DB; capture the real inode
+        # after open so stale-write checks are armed for new boards too.
+        generation = _db_file_generation(path)
         try:
+            if isinstance(conn, KanbanConnection):
+                conn._hermes_kanban_path = path.resolve()
+                conn._hermes_kanban_generation = generation
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
                 # WAL activation can take an exclusive lock while SQLite creates the
@@ -1824,7 +1980,7 @@ def connect(
                     # stale PRAGMA snapshots during gateway startup.
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
-                    _INITIALIZED_PATHS.add(resolved)
+                    _remember_initialized_generation(resolved, generation)
         except Exception:
             conn.close()
             raise
@@ -1891,6 +2047,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
+        _INITIALIZED_GENERATIONS.pop(resolved, None)
     with contextlib.closing(connect(path)):
         pass
     return path
