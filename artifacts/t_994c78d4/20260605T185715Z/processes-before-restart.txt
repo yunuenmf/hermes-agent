@@ -1,0 +1,6 @@
+ 278704    1585 Fri Jun  5 09:11:24 2026 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes dashboard --host 100.114.47.12 --port 9119 --no-open --skip-build --insecure
+ 420957    1585 Fri Jun  5 10:54:20 2026 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace
+ 421019    1585 Fri Jun  5 10:54:23 2026 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile coordinator_hermes_migration_system gateway run --replace
+ 957457    1585 Fri Jun  5 17:03:39 2026 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile pa_yunuen gateway run --replace
+1036697    1585 Fri Jun  5 18:05:19 2026 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile coordinator_hermes_maintenance gateway run --replace
+1226014    1585 Fri Jun  5 19:57:15 2026 bash /home/engs2272/.hermes/scripts/hermes-dashboard-healthcheck.sh

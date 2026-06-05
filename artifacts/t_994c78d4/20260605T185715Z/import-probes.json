@@ -1,0 +1,35 @@
+{
+  "cwd": "/home/engs2272/.hermes/hermes-agent",
+  "modules": {
+    "gateway.run": {
+      "file": "/home/engs2272/.hermes/hermes-agent/gateway/run.py",
+      "ok": true
+    },
+    "hermes_cli.kanban_status_lines": {
+      "file": "/home/engs2272/.hermes/hermes-agent/hermes_cli/kanban_status_lines.py",
+      "ok": true
+    },
+    "hermes_cli.main": {
+      "file": "/home/engs2272/.hermes/hermes-agent/hermes_cli/main.py",
+      "ok": true
+    },
+    "hermes_cli.maintenance_status_lines": {
+      "file": "/home/engs2272/.hermes/hermes-agent/hermes_cli/maintenance_status_lines.py",
+      "ok": true
+    },
+    "plugins.kanban.dashboard.plugin_api": {
+      "file": "/home/engs2272/.hermes/hermes-agent/plugins/kanban/dashboard/plugin_api.py",
+      "ok": true
+    },
+    "tools.kanban_tools": {
+      "file": "/home/engs2272/.hermes/hermes-agent/tools/kanban_tools.py",
+      "ok": true
+    }
+  },
+  "python": "/home/engs2272/.hermes/hermes-agent/venv/bin/python",
+  "status_renderer_probe": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "Self status: DORMANT \u2014 no active task\nLineage status: WORKING \u2014 working: 2; waiting: 0; blocked: 0; dormant: 0\n"
+  }
+}

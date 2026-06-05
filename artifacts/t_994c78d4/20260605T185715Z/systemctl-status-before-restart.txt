@@ -1,0 +1,66 @@
+● hermes-gateway.service - Hermes Agent Gateway - Messaging Platform Integration
+     Loaded: loaded (/home/engs2272/.config/systemd/user/hermes-gateway.service; enabled; preset: enabled)
+    Drop-In: /home/engs2272/.config/systemd/user/hermes-gateway.service.d
+             └─dm-routing-isolation.conf, override.conf, zzzz-current-admin-room.conf
+     Active: active (running) since Fri 2026-06-05 10:54:21 BST; 9h ago
+   Main PID: 420957 (python)
+      Tasks: 44 (limit: 76869)
+     Memory: 2.3G (peak: 3.1G)
+        CPU: 11min 6.920s
+     CGroup: /user.slice/user-1001.slice/user@1001.service/app.slice/hermes-gateway.service
+             ├─ 420957 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace
+             ├─ 916871 python3 /home/engs2272/.hermes/coordination/maintenance_matrix_retry_20260605.py
+             ├─1213131 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes -p coordinator_hermes_maintenance --accept-hooks --skills kanban-worker chat -q "work kanban task t_954ab613"
+             ├─1220796 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes -p developer_hermes_maintenance --accept-hooks --skills kanban-worker chat -q "work kanban task t_0bb22a1a"
+             ├─1221953 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes -p coordinator_hermes_maintenance --accept-hooks --skills kanban-worker chat -q "work kanban task t_0633274d"
+             ├─1224331 node /home/engs2272/.hermes/profiles/developer_hermes_maintenance/lsp/bin/pyright-langserver --stdio
+             └─1224609 node /home/engs2272/.hermes/profiles/coordinator_hermes_maintenance/lsp/bin/pyright-langserver --stdio
+
+Jun 05 18:38:14 engs-30382 python[420957]: WARNING gateway.run: kanban dispatcher stuck: ready queue non-empty for 201 consecutive ticks but 0 workers spawned. Check profile health (venv, PATH, credentials) and `hermes kanban list --status ready`.
+Jun 05 19:00:23 engs-30382 python[420957]: WARNING mau.crypto: Device @hermesox:matrix.org/AN5zno9P33 doesn't have a valid cross-signing signature
+Jun 05 19:00:23 engs-30382 python[420957]: WARNING mau.crypto: Device @hermesox:matrix.org/V8n2vAC2Od doesn't have a valid cross-signing signature
+Jun 05 19:00:23 engs-30382 python[420957]: WARNING mau.crypto: Device @hermesox:matrix.org/iM2YdyPSlC doesn't have a valid cross-signing signature
+Jun 05 19:00:23 engs-30382 python[420957]: WARNING mau.crypto: Device @hermesox:matrix.org/vMjxTZtsMl doesn't have a valid cross-signing signature
+Jun 05 19:29:35 engs-30382 python[420957]: WARNING agent.tool_executor: Tool terminal returned error (6.06s): {"output": "bot=@hermesox:matrix.org\npace 5s before POST /_matrix/client/v3/createRoom\nRATE_LIMITED retry_after_ms=1842150 error=Too Many Requests", "exit_code": 1, "error": null}
+Jun 05 19:30:00 engs-30382 python[420957]: WARNING agent.tool_executor: Tool memory returned error (0.00s): {"success": false, "error": "Memory at 1,365/1,375 chars. Adding this entry (234 chars) would exceed the limit. Replace or remove existing entries first.", "current_entries": ["For PA/profile Matrix c
+Jun 05 19:30:05 engs-30382 python[420957]: WARNING agent.tool_executor: Tool memory returned error (0.00s): {"success": false, "error": "Replacement would put memory at 1,510/1,375 chars. Shorten the new content or remove other entries first."}
+
+● hermes-gateway-coordinator_hermes_maintenance.service - Hermes Agent Gateway - Messaging Platform Integration
+     Loaded: loaded (/home/engs2272/.config/systemd/user/hermes-gateway-coordinator_hermes_maintenance.service; enabled; preset: enabled)
+    Drop-In: /home/engs2272/.config/systemd/user/hermes-gateway-coordinator_hermes_maintenance.service.d
+             └─kanban-board.conf, matrix-room.conf, zzzz-profile-matrix-activation-guard.conf
+     Active: active (running) since Fri 2026-06-05 18:05:20 BST; 1h 51min ago
+    Process: 1036672 ExecStartPre=/home/engs2272/.hermes/coordination/validate_matrix_profile_gateway_activation.py --profile coordinator_hermes_maintenance (code=exited, status=0/SUCCESS)
+   Main PID: 1036697 (python)
+      Tasks: 20 (limit: 76869)
+     Memory: 2.9G (peak: 3.0G)
+        CPU: 8min 45.773s
+     CGroup: /user.slice/user-1001.slice/user@1001.service/app.slice/hermes-gateway-coordinator_hermes_maintenance.service
+             ├─1036697 /home/engs2272/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile coordinator_hermes_maintenance gateway run --replace
+             ├─1224160 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes -p responsible_project_autonomy --accept-hooks --skills kanban-worker --skills hermes-agent --skills kanban-orchestrator chat -q "work kanban task t_637b19a2"
+             ├─1224161 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes -p developer_hermes_maintenance --accept-hooks --skills kanban-worker --skills hermes-agent --skills github-pr-workflow chat -q "work kanban task t_994c78d4"
+             ├─1225729 /usr/bin/bash -c "source /tmp/hermes-snap-27dd4a58946d.sh >/dev/null 2>&1 || true\nbuiltin cd -- /home/engs2272/.worktrees/t_994c78d4 || exit 126\neval 'set -euo pipefail\nTASK=t_994c78d4\nSTAMP=\$(date -u +%Y%m%dT%H%M%SZ)\nWORKSPACE=/home/engs2272/.worktrees/t_994c78d4\nRUNTIME=/home/engs2272/.hermes/hermes-agent\nART=\"\$WORKSPACE/artifacts/\$TASK/\$STAMP\"\nmkdir -p \"\$ART\"\ncd \"\$RUNTIME\"\n{\n  echo \"timestamp_utc=\$STAMP\"\n  echo \"runtime=\$RUNTIME\"\n  echo \"branch=\$(git branch --show-current)\"\n  echo \"head=\$(git rev-parse HEAD)\"\n  echo \"upstream=\$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null || true)\"\n  echo \"ahead_behind_head_yunuenmf_main=\$(git rev-list --left-right --count HEAD...yunuenmf/main 2>/dev/null || true)\"\n} > \"\$ART/runtime-head.txt\"\ngit status --short --branch > \"\$ART/runtime-status.txt\"\ngit diff --binary > \"\$ART/runtime-unstaged.patch\"\ngit diff --cached --binary > \"\$ART/runtime-staged.patch\"\ngit ls-files --others --exclude-standard > \"\$ART/runtime-untracked.txt\"\n# manifest only: runtime is clean according to recent handoffs, avoid copying arbitrary untracked payloads unless present.\nif [ -s \"\$ART/runtime-untracked.txt\" ]; then\n  tar -czf \"\$ART/runtime-untracked.tgz\" -T \"\$ART/runtime-untracked.txt\" || true\nelse\n  : > \"\$ART/runtime-untracked.tgz.empty\"\nfi\n\n# Import/live activation probes from runtime checkout+venv.\nsource \"\$RUNTIME/venv/bin/activate\"\npython - <<'\\''PY'\\'' > \"\$ART/import-probes.json\"\nimport importlib, json, os, subprocess, sys\nmods = [\n    \"hermes_cli.kanban_status_lines\",\n    \"hermes_cli.maintenance_status_lines\",\n    \"tools.kanban_tools\",\n    \"plugins.kanban.dashboard.plugin_api\",\n    \"gateway.run\",\n    \"hermes_cli.main\",\n]\nout = {\"python\": sys.executable, \"cwd\": os.getcwd(), \"modules\": {}}\nfor m in mods:\n    try:\n        mod = importlib.import_module(m)\n        out[\"modules\"][m] = {\"ok\": True, \"file\": getattr(mod, \"__file__\", None)}\n    except Exception as e:\n        out[\"modules\"][m] = {\"ok\": False, \"error\": repr(e)}\ntry:\n    p = subprocess.run([sys.executable, \"scripts/render_status_lines.py\", \"--self\", \"dormant\", \"no active task\", \"--lineage-count\", \"working\", \"2\"], cwd=os.getcwd(), text=True, capture_output=True, timeout=20)\n    out[\"status_renderer_probe\"] = {\"returncode\": p.returncode, \"stdout\": p.stdout, \"stderr\": p.stderr}\nexcept Exception as e:\n    out[\"status_renderer_probe\"] = {\"error\": repr(e)}\nprint(json.dumps(out, indent=2, sort_keys=True))\nPY\n\nsystemctl --user status hermes-gateway.service hermes-gateway-coordinator_hermes_maintenance.service hermes-dashboard.service --no-pager --lines=8 > \"\$ART/systemctl-status-before-restart.txt\" 2>&1 || true\nps -eo pid,ppid,lstart,cmd | grep -E '\\''hermes gateway|gateway.run|hermes-dashboard|kanban.dashboard|uvicorn|python.*dashboard'\\'' | grep -v grep > \"\$ART/processes-before-restart.txt\" || true\n\nprintf '\\''%s\\n'\\'' \"\$ART\"'\n__hermes_ec=\$?\nexport -p > /tmp/hermes-snap-27dd4a58946d.sh 2>/dev/null || true\npwd -P > /tmp/hermes-cwd-27dd4a58946d.txt 2>/dev/null || true\nprintf '\\n__HERMES_CWD_27dd4a58946d__%s__HERMES_CWD_27dd4a58946d__\\n' \"\$(pwd -P)\"\nexit \$__hermes_ec"
+             └─1226013 systemctl --user status hermes-gateway.service hermes-gateway-coordinator_hermes_maintenance.service hermes-dashboard.service --no-pager --lines=8
+
+Jun 05 19:03:37 engs-30382 python[1036697]: WARNING agent.tool_executor: Tool memory returned error (0.00s): {"success": false, "error": "Replacement would put memory at 1,392/1,375 chars. Shorten the new content or remove other entries first."}
+Jun 05 19:03:37 engs-30382 python[1036697]: [Tool loop warning: same_tool_failure_warning; count=3; memory
+Jun 05 19:06:15 engs-30382 python[1036697]: WARNING agent.tool_executor: Tool skill_manage returned error (0.00s): {"success": false, "error": "File must be under one of: assets, references, scripts, templates. Got: 'SKILL.md'"}
+Jun 05 19:08:48 engs-30382 python[1036697]: WARNING agent.conversation_compression: compression lock subsystem unavailable for session=20260605_185011_a4c9a1 (AttributeError: 'SessionDB' object has no attribute 'try_acquire_compression_lock') — proceeding without lock. This usually means a stale in-memory module after an update; restart the process (or `hermes update`) to resync.
+Jun 05 19:10:23 engs-30382 python[1036697]: WARNING hermes_plugins.hermes_lcm.engine: LCM compression boundary skipped carry-over: old_session_id=20260605_185011_a4c9a1 does not match bound session=20260605_185620_113865
+Jun 05 19:35:02 engs-30382 python[1036697]: WARNING agent.tool_executor: Tool terminal returned error (301.38s): {"output": "", "exit_code": -1, "error": "BLOCKED: Command timed out. Do NOT retry this command.", "status": "blocked"}
+Jun 05 19:38:59 engs-30382 python[1036697]: WARNING agent.conversation_compression: compression lock subsystem unavailable for session=20260605_191023_7cbe47 (AttributeError: 'SessionDB' object has no attribute 'try_acquire_compression_lock') — proceeding without lock. This usually means a stale in-memory module after an update; restart the process (or `hermes update`) to resync.
+Jun 05 19:40:27 engs-30382 python[1036697]: WARNING hermes_plugins.hermes_lcm.engine: LCM compression boundary skipped carry-over: old_session_id=20260605_191023_7cbe47 does not match bound session=20260605_192647_ba185a
+
+● hermes-dashboard.service - Hermes Agent Dashboard Web UI
+     Loaded: loaded (/home/engs2272/.config/systemd/user/hermes-dashboard.service; enabled; preset: enabled)
+     Active: active (running) since Fri 2026-06-05 09:11:25 BST; 10h ago
+   Main PID: 278704 (hermes)
+      Tasks: 6 (limit: 76869)
+     Memory: 82.7M (peak: 84.7M)
+        CPU: 2min 11.361s
+     CGroup: /user.slice/user-1001.slice/user@1001.service/app.slice/hermes-dashboard.service
+             └─278704 /home/engs2272/.hermes/hermes-agent/venv/bin/python3 /home/engs2272/.hermes/hermes-agent/venv/bin/hermes dashboard --host 100.114.47.12 --port 9119 --no-open --skip-build --insecure
+
+Jun 05 09:11:25 engs-30382 systemd[1585]: Started hermes-dashboard.service - Hermes Agent Dashboard Web UI.
+Jun 05 09:11:25 engs-30382 hermes-dashboard-start.sh[278704]: → Skipping web UI build (--skip-build); using dist at /home/engs2272/.hermes/hermes-agent/hermes_cli/web_dist
+Jun 05 09:11:25 engs-30382 hermes-dashboard-start.sh[278704]:   Hermes Web UI → http://100.114.47.12:9119
