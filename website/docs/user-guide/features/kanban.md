@@ -59,7 +59,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   (e.g. one per project, repo, or domain); see [Boards (multi-project)](#boards-multi-project)
   below. Single-project users stay on the `default` board and never see the
   word "board" outside this docs section.
-- **Task** — a row with title, optional body, one assignee (a profile name), status (`triage | todo | ready | running | blocked | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation).
+- **Task** — a row with title, optional body, one assignee (a profile name), an internal workflow status (`triage | todo | scheduled | ready | running | blocked | review | done | archived`), optional tenant namespace, optional idempotency key (dedup for retried automation). User-facing live status reports map those workflow aliases to `working | waiting | blocked | dormant`; `done` is completion history, not live availability.
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
@@ -68,6 +68,46 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
 - **Tenant** — optional string namespace *within* a board. One specialist fleet can serve multiple businesses (`--tenant business-a`) with data isolation by workspace path and memory key prefix. Tenants are a soft filter; boards are the hard isolation boundary.
+
+## Live status vocabulary
+
+Kanban keeps the legacy storage-level workflow states for DB and dispatcher compatibility, but new user-facing reports, dashboard labels, and coordinator/profile status lines should use this live vocabulary:
+
+| Live status | Meaning | Compatibility aliases |
+|---|---|---|
+| `working` | Active work is underway or immediately queued/spawnable. | `ready`, `queue`, `running`, `in_progress`, `review` |
+| `waiting` | A specific active task/duty/dependency exists, but progress is paused on a non-human/system condition. | `todo` with unfinished parents, `scheduled` |
+| `blocked` | A specific active task/duty/dependency is prevented until a human acts. | `blocked` only; do not use it for system waits or idle lanes |
+| `dormant` | No active actionable assignment exists. Human instruction is needed to resume, but no specific dependency is currently prevented. | unspecced `triage`, taskless profiles/projects |
+
+`done` remains valid as task completion history. It is not a live profile/project availability state; a profile with no active work is `dormant`, not `done`.
+
+### Self/Lineage status lines for profile communication
+
+Project-structured profiles that report status in Matrix or other chat surfaces should use two generic lines, not role-specific labels and not legacy `Blocker status` / `NOT BLOCKED` wording:
+
+```text
+Self status: WORKING|WAITING|BLOCKED|DORMANT — <specific status for this profile itself>
+Lineage status: WORKING|WAITING|BLOCKED|DORMANT — <aggregate status for structural descendants>
+```
+
+`Self status` is about the speaker profile's own active action, wait, human blocker, or dormant condition. `Lineage status` is about structurally supervised descendants; it is not the same graph as `task_links` dependencies. A profile with no descendants, or no descendants with active work, reports lineage as `DORMANT`.
+
+Use `scripts/render_status_lines.py` from a source checkout for deterministic copy-paste output instead of recomputing these lines from broad LLM context:
+
+```bash
+python scripts/render_status_lines.py \
+  --self working "updating Kanban status docs" \
+  --lineage-count running 1 \
+  --lineage-count blocked 1
+```
+
+Sample output:
+
+```text
+Self status: WORKING — updating Kanban status docs
+Lineage status: WORKING — working: 1; waiting: 0; blocked: 1; dormant: 0
+```
 
 ## Boards (multi-project)
 
@@ -153,6 +193,36 @@ matters.
 All dashboard API endpoints accept `?board=<slug>` for board scoping. The
 events WebSocket is pinned to a board at connection time; switching in
 the UI opens a fresh WS against the new board.
+
+
+## File attachments
+
+Tasks can carry file attachments — PDFs, images, source documents — so a
+worker has the source material it needs without you pasting paths into the
+body and hoping it finds them.
+
+- **Upload** — open a task in the dashboard drawer and use the
+  **Attachments** section's *Upload file* button (multiple files at once
+  are fine). Each upload is capped at 25 MB.
+- **Storage** — files land under
+  `<hermes-home>/kanban/attachments/<task_id>/` for the default board, or
+  `<hermes-home>/kanban/boards/<slug>/attachments/<task_id>/` for a named
+  board. Set `HERMES_KANBAN_ATTACHMENTS_ROOT` to pin a custom location.
+- **What the worker sees** — when the dispatcher hands a task to a worker,
+  the worker's context includes an **Attachments** section listing each
+  file's name and its **absolute path**. The worker has full file/terminal
+  tool access, so it reads attachments directly (`read_file`, or shell
+  tools like `pdftotext`).
+- **Download / remove** — the drawer lists each attachment with a download
+  link and a remove (×) control. Removing an attachment deletes both the
+  metadata row and the on-disk file.
+
+:::note Remote terminal backends
+Attachment paths resolve directly on the **local** terminal backend, which
+is the default for Kanban workers. If you run workers on a remote backend
+(Docker, Modal), mount the board's `attachments/` directory into the
+sandbox so the absolute paths in the worker context are reachable.
+:::
 
 
 ## Quick start
@@ -398,6 +468,20 @@ hermes kanban create "audit auth flow" \
 
 These skills are **additive** to the built-in `kanban-worker` — the dispatcher emits one `--skills <name>` flag for each (and for the built-in), so the worker spawns with all of them loaded. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
+### Goal-mode cards (`--goal`)
+
+By default each worker gets **one shot** at its card — do the work, call `kanban_complete`/`kanban_block`, exit. Pass `--goal` (CLI) or `goal_mode=True` (the `kanban_create` tool / dashboard) to instead run that worker in a **goal loop**, the same Ralph-style engine behind the `/goal` slash command: after every turn an auxiliary judge checks the worker's output against the card's title + body (treated as the acceptance criteria), and if the work isn't done — and the turn budget remains — the worker keeps going **in the same session** until the judge agrees, the worker terminates the task itself, or the budget runs out (which **blocks** the card for human review rather than exiting silently).
+
+```bash
+hermes kanban create "Translate the docs site to French" \
+    --body "Acceptance: every page translated, no English left, links intact." \
+    --assignee linguist \
+    --goal \
+    --goal-max-turns 15      # optional; default 20
+```
+
+Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
+
 ### The orchestrator skill
 
 A **well-behaved orchestrator does not do the work itself.** It decomposes the user's goal into tasks, links them, assigns each to one of the profiles you've set up, and steps back. The `kanban-orchestrator` skill encodes this as tool-call patterns: anti-temptation rules, a Step-0 profile-discovery prompt (the dispatcher silently fails on unknown assignee names, so the orchestrator must ground every card in profiles that actually exist on your machine), and a decomposition playbook keyed on `kanban_create` / `kanban_link` / `kanban_comment`.
@@ -565,6 +649,22 @@ dashboard:
 
 Each key is optional and falls back to the shown default.
 
+### Internal profile communication
+
+Kanban is the durable work queue, not a chat transport. Do not create Kanban contact tasks merely to ask, notify, ping, or refine with another profile. Use direct/internal channels for discussion, then write Kanban comments or follow-up tasks only for durable outcomes: decisions, dependencies, blockers, evidence, review handoffs, or concrete work.
+
+Deterministic options:
+
+```bash
+# Direct profile runner path; starts the named profile without creating a Kanban row.
+hermes -p <profile> chat -q '<question or instruction>' --toolsets safe
+
+# Structured internal message path when a validated private room/channel exists.
+printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'
+```
+
+If a Matrix profile-room send is blocked, unvalidated, or unavailable, do not create a Kanban contact task as a workaround. Fall back to the direct profile runner path, or block only when a concrete human decision/action is required.
+
 ### Security model
 
 The dashboard's HTTP auth middleware [explicitly skips `/api/plugins/`](./extending-the-dashboard#backend-api-routes) — plugin routes are unauthenticated by design because the dashboard binds to localhost by default. That means the kanban REST surface is reachable from any process on the host.
@@ -602,6 +702,7 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--priority N] [--triage] [--idempotency-key KEY]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
+                                [--goal] [--goal-max-turns N]
                                 [--skill <name>]...
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]

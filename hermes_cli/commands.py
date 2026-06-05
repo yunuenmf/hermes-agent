@@ -78,15 +78,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("undo", "Back up N user turns and re-prompt (default 1)", "Session",
+               args_hint="[N]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
                args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
-    CommandDef("compress", "Manually compress conversation context", "Session",
-               args_hint="[focus topic]"),
+    CommandDef("compress", "Compress conversation context (add 'here [N]' to keep recent N turns)", "Session",
+               args_hint="[here [N] | focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
@@ -123,7 +124,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
-               aliases=("provider",), args_hint="[model] [--provider name] [--global] [--refresh]"),
+               args_hint="[model] [--provider name] [--global] [--refresh]"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
@@ -183,6 +184,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "archive", "tail", "dispatch", "stats", "notify-subscribe",
                             "notify-list", "notify-unsubscribe", "log", "runs",
                             "heartbeat", "assignees", "context", "specify", "gc")),
+    CommandDef("fragmentation", "Finalize context-fragmentation recovery and reset this live session",
+               "Tools & Skills", args_hint="finalize-reset [--source PATH] [--note TEXT]",
+               subcommands=("finalize-reset", "live-reset")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
@@ -339,6 +343,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "background",
         "commands",
         "deny",
+        "fragmentation",
         "help",
         "new",
         "profile",
@@ -1070,13 +1075,25 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
 
-    # First pass: canonical names (so they win slots if we hit the cap).
+    # First pass: high-value aliases. Slack's 50-command cap means aliases
+    # appended after every canonical command can disappear as the registry grows,
+    # but these are documented everyday shorthands and tests require them to stay
+    # first-class native slashes.
+    priority_aliases = {"btw", "bg", "reset", "q"}
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            if alias in priority_aliases:
+                _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Second pass: canonical names (so they win slots over non-priority aliases if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Third pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue

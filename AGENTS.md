@@ -2,6 +2,8 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+**Never give up on the right solution.**
+
 ## Development Environment
 
 ```bash
@@ -65,6 +67,40 @@ hermes-agent/
 **Logs:** `~/.hermes/logs/` — `agent.log` (INFO+), `errors.log` (WARNING+),
 `gateway.log` when running the gateway. Profile-aware via `get_hermes_home()`.
 Browse with `hermes logs [--follow] [--level ...] [--session ...]`.
+
+## TypeScript Style
+
+Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packages.
+
+- Prefer small nanostores over component state when state is shared, reused, or read by distant UI.
+- Let each feature own its atoms. Chat state belongs near chat, shell state near shell, shared state in `src/store`.
+- Components that render from an atom should use `useStore`. Non-rendering actions should read with `$atom.get()`.
+- Do not pass state through three components when the leaf can subscribe to the atom.
+- Keep persistence beside the atom that owns it.
+- Keep route roots thin. They compose routes and shell; they should not become controllers.
+- No monolithic hooks. A hook should own one narrow job.
+- Prefer colocated action modules over hidden god hooks.
+- If a callback is pure side effect, use the terse void form:
+  `onState={st => void setGatewayState(st)}`.
+- Async UI handlers should make intent explicit:
+  `onClick={() => void save()}`.
+- Prefer interfaces for public props and shared object shapes. Avoid `type X = { ... }` for object props.
+- Extend React primitives for props: `React.ComponentProps<'button'>`, `React.ComponentProps<typeof Dialog>`, `Omit<...>`, `Pick<...>`.
+- Table-driven beats condition ladders when mapping ids, routes, or views.
+- `src/app` owns routes, pages, and page-specific components.
+- `src/store` owns shared atoms.
+- `src/lib` owns shared pure helpers.
+
+## Internal Profile Communication
+
+Use direct/internal messaging for profile-to-profile discussion. Kanban is the durable work queue, not a chat transport: do not create contact tasks merely to ask, notify, ping, or refine with another profile. After a direct discussion, record only durable outcomes, dependencies, blockers, evidence, or follow-up work on the board.
+
+Deterministic toolbox:
+
+- Direct profile command / runner path: `hermes -p <profile> chat -q '<question or instruction>' --toolsets safe`. This starts the named profile directly and does not create a Kanban row. Add `--skills <skill>` when the profile needs a specific policy pack.
+- Structured internal message path: use `send_message(target='<platform-or-profile-room>', message='<structured note>')` from an agent, or `printf '%s\n' '<structured note>' | hermes send --to <target> --file - --subject '[internal:<profile>]'` from shell scripts when a private profile room/channel exists.
+- Escalation: contact the human from Matrix (or another human-facing channel) only when the decision/action genuinely requires Yunuen; otherwise keep profile discussion internal. If a Matrix profile-room send is blocked or unvalidated, do not create a Kanban contact task as a workaround — fall back to the direct profile runner path, or block only when human action is truly required.
+- Kanban remains for durable work items, parent/child dependencies, blockers, evidence, review handoffs, and post-discussion outcomes.
 
 ## File Dependency Chain
 

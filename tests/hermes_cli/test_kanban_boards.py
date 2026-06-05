@@ -236,11 +236,39 @@ class TestBoardCRUD:
         assert meta["slug"] == "baz"
         assert meta["name"] == "Baz"
         assert meta["icon"] == "📦"
+        assert meta["autonomy_level"] == "Medium"
+        assert meta["autonomy"] == kb.AUTONOMY_LEVEL_DEFINITIONS["Medium"]
         # Round-trip via read_board_metadata.
         again = kb.read_board_metadata("baz")
         assert again["name"] == "Baz"
         assert again["description"] == "desc"
         assert again["icon"] == "📦"
+        assert again["autonomy_level"] == "Medium"
+
+    def test_create_accepts_autonomy_level(self, fresh_home):
+        meta = kb.create_board("high-trust", autonomy_level="High")
+
+        assert meta["autonomy_level"] == "High"
+        assert meta["autonomy"]["auto_approves_medium_prompts"] is True
+        assert meta["autonomy"]["deployment_requires_approval"] is True
+        assert kb.read_board_metadata("high-trust")["autonomy_level"] == "High"
+
+    def test_write_metadata_rejects_unknown_autonomy_level(self, fresh_home):
+        kb.create_board("guarded")
+
+        with pytest.raises(ValueError, match="autonomy_level"):
+            kb.write_board_metadata("guarded", autonomy_level="Ultra")
+
+    @pytest.mark.parametrize("level", ["Low", "Medium", "High", "Full", "low", "FULL"])
+    def test_normalize_autonomy_level(self, fresh_home, level):
+        expected = level.strip().capitalize()
+        assert kb.normalize_autonomy_level(level) == expected
+
+    def test_autonomy_definition_returns_deep_copy(self, fresh_home):
+        definition = kb.autonomy_definition("High")
+        definition["contact_yunuen_for"].append("mutated")
+
+        assert "mutated" not in kb.autonomy_definition("High")["contact_yunuen_for"]
 
     def test_remove_archive(self, fresh_home):
         kb.create_board("toremove")

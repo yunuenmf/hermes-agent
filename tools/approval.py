@@ -128,6 +128,20 @@ _HERMES_ENV_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'\.env\b'
 )
+# ~/.hermes/config.yaml IS the security policy: approvals.mode, yolo, and the
+# permanent-approval allowlist live here, and the config cache is mtime-keyed
+# so a write takes effect mid-session (the agent could flip approvals.mode=off
+# and immediately bypass the gate). Pair the write_file/patch deny (file_tools
+# _check_sensitive_path) with terminal-side coverage so `sed -i`, `tee`, `>`,
+# `cp`, etc. targeting it are gated too — otherwise the deny is unpaired
+# theater. Mirrors _HERMES_ENV_PATH; matches the HERMES_HOME override form as
+# well as ~/.hermes/.
+_HERMES_CONFIG_PATH = (
+    r'(?:~\/\.hermes/|'
+    r'(?:\$home|\$\{home\})/\.hermes/|'
+    r'(?:\$hermes_home|\$\{hermes_home\})/)'
+    r'config\.yaml\b'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -153,6 +167,7 @@ _SENSITIVE_WRITE_TARGET = (
     rf'(?:{_SYSTEM_CONFIG_PATH}|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
+    rf'{_HERMES_CONFIG_PATH}|'
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
@@ -391,6 +406,12 @@ DANGEROUS_PATTERNS = [
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
+    # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
+    # .env). sed -i bypasses the redirection/tee patterns above because it
+    # mutates the file directly. Pairs the file_tools write_file/patch deny so
+    # the terminal side is not an open door. See #14639.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env"),
+    (rf'\bsed\s+--in-place\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (long flag)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
@@ -1236,6 +1257,26 @@ def check_all_command_guards(command: str, env_type: str,
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
+    # GitHub authority-policy classification. This is deliberately layered on
+    # top of the existing Tirith + dangerous-pattern checks: green GitHub
+    # commands may avoid unnecessary prompts only when no other guard warns,
+    # while yellow/red GitHub operations become approval warnings even if the
+    # generic dangerous-command regexes would otherwise miss them.
+    github_decision = None
+    try:
+        from tools.github_authority import (
+            classify_github_command,
+            log_github_authority_decision,
+        )
+
+        github_decision = classify_github_command(command)
+        log_github_authority_decision(command, github_decision)
+    except Exception as exc:
+        # Classification is advisory. A classifier bug must not disable the
+        # baseline terminal safety path.
+        logger.debug("GitHub authority classification failed: %s", exc, exc_info=True)
+        github_decision = None
+
     # --- Phase 2: Decide ---
 
     # Collect warnings that need approval
@@ -1259,6 +1300,20 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
+    if github_decision is not None and github_decision.tier in {"yellow", "red"}:
+        github_key = f"github-authority:{github_decision.tier}:{github_decision.command_family or 'unknown'}"
+        github_desc = (
+            f"GitHub authority {github_decision.tier} operation: {github_decision.reason}. "
+            "Yellow operations require recorded mechanical preflight evidence; "
+            "red operations require explicit Yunuen approval."
+        )
+        if not is_approved(session_key, github_key):
+            # Treat policy warnings like Tirith warnings for persistence: they
+            # may be approved for the current/session flow, but they must not
+            # be permanently allowlisted and must not expose the CLI [a]lways
+            # option. Red/yellow gates remain deliberate per-action decisions.
+            warnings.append((github_key, github_desc, True))
+
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
@@ -1266,8 +1321,13 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
-    # (openai/codex#13860).
-    if approval_mode == "smart":
+    # (openai/codex#13860). GitHub authority yellow/red policy warnings are
+    # excluded because they require objective preflight/Yunuen gates, not an
+    # auxiliary risk guess.
+    has_github_authority_warning = any(
+        key.startswith("github-authority:") for key, _, _ in warnings
+    )
+    if approval_mode == "smart" and not has_github_authority_warning:
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":

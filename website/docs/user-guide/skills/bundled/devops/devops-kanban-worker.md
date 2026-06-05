@@ -31,6 +31,12 @@ The following is the complete skill definition that Hermes loads when this skill
 
 > You're seeing this skill because the Hermes Kanban dispatcher spawned you as a worker with `--skills kanban-worker` — it's loaded automatically for every dispatched worker. The **lifecycle** (6 steps: orient → work → heartbeat → block/complete) also lives in the `KANBAN_GUIDANCE` block that's auto-injected into your system prompt. This skill is the deeper detail: good handoff shapes, retry diagnostics, edge cases.
 
+## Live status vocabulary
+
+Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked`, `dormant`. Internal Kanban DB/workflow aliases remain valid during migration: `ready`/`queue`/`running`/`in_progress`/`review` map to `working`; dependency-held `todo` and `scheduled` map to `waiting`; unspecced `triage` maps to `dormant`; `done` is completion history only. Reserve `blocked` for a specific active task/duty/dependency prevented by human action.
+
+For Matrix/profile-facing project communication, use generic `Self status:` and `Lineage status:` lines. Do not introduce role-specific replacements such as `Coordinator status:`, and do not use legacy `Blocker status:` or `NOT BLOCKED` wording in new prompts. `Self status` describes this profile's own active action/wait/human blocker/dormant condition; `Lineage status` aggregates structural descendants and is separate from task dependency links. When deterministic output is needed, prefer the repo helper `python scripts/render_status_lines.py --self ... --lineage-count ...` over recomputing the wording from broad LLM context.
+
 ## Workspace handling
 
 Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORKSPACE`:
@@ -61,13 +67,22 @@ kanban_complete(
         "tests_run": 14,
         "tests_passed": 14,
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        # Required for deterministic features / behavior changes / migrations /
+        # safety gates / guards / automation / code-affecting functionality.
+        # If the implementation repo has GitHub Issues disabled, use the
+        # project repo issue and link it from PRs/tasks.
+        "three_layer_tracking": {
+            "matrix": "Matrix update mentions task t_example and issue/PR #123",
+            "kanban": "task t_example plus this review-ready handoff",
+            "github": "issue/PR https://github.com/org/repo/issues/123",
+        },
     },
 )
 ```
 
 **Coding task that needs human review (review-required):**
 
-For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
+For most code-changing tasks, the work isn't truly *done* until a human reviewer has eyes on it. Block instead of complete, with `reason` prefixed `review-required: ` so the dashboard surfaces the row as needing review. Drop the structured metadata (changed files, test counts, diff/PR url) into a comment first, since `kanban_block` only carries the human-readable reason — comments are the durable annotation channel. For deterministic features, behavior changes, migrations, safety gates, guards, automation, or other code-affecting functionality work, that metadata must also include `three_layer_tracking.matrix`, `three_layer_tracking.kanban`, and `three_layer_tracking.github`; Kanban-only tracking is insufficient. Reviewer either approves and runs `hermes kanban unblock <id>` (which re-spawns you with the comment thread for any follow-ups) or asks for changes via another comment.
 
 ```python
 import json
@@ -79,6 +94,11 @@ kanban_comment(
         "tests_passed": 14,
         "diff_path": "/path/to/worktree",  # or PR url if pushed
         "decisions": ["user_id primary, IP fallback for unauthenticated requests"],
+        "three_layer_tracking": {
+            "matrix": "Matrix update mentions task t_example and issue/PR #123",
+            "kanban": "task t_example plus this review-required handoff",
+            "github": "issue/PR https://github.com/org/repo/issues/123",
+        },
     }, indent=2),
 )
 kanban_block(
@@ -175,6 +195,12 @@ If you open the task and `kanban_show` returns `runs: [...]` with one or more cl
 - `outcome: "reclaimed"` + `summary: "task archived..."` — operator archived the task out from under the previous run; you probably shouldn't be running at all, check status carefully.
 - `outcome: "blocked"` — a previous attempt blocked; the unblock comment should be in the thread by now.
 
+## Internal profile communication
+
+Profile-to-profile discussion should not be modeled as a Kanban contact task. If you need quick peer input and you have permission/tools, use a direct profile command such as `hermes -p <profile> chat -q '<question>' --toolsets safe`, or send a structured internal note with `send_message` / `hermes send` to a validated private profile room. Record the result on Kanban only when it becomes durable evidence, a dependency, a blocker, review feedback, or concrete follow-up work.
+
+If a Matrix/profile-room send is blocked or unvalidated, fall back to the direct profile runner path. Escalate to the human only when the question requires human action or a decision; otherwise do not create a Kanban task merely to ping another profile.
+
 ## Notification routing
 
 You can configure the gateway to receive cross-profile Kanban task notifications by adding `notification_sources` to `~/.hermes/config.yaml`.
@@ -187,6 +213,7 @@ You can configure the gateway to receive cross-profile Kanban task notifications
 - Call `delegate_task` as a substitute for `kanban_create`. `delegate_task` is for short reasoning subtasks inside YOUR run; `kanban_create` is for cross-agent handoffs that outlive one API loop.
 - Modify files outside `$HERMES_KANBAN_WORKSPACE` unless the task body says to.
 - Create follow-up tasks assigned to yourself — assign to the right specialist.
+- Create Kanban contact tasks merely to ask, notify, ping, or refine with another profile; use direct/internal messaging and record only durable outcomes.
 - Complete a task you didn't actually finish. Block it instead.
 
 ## Pitfalls

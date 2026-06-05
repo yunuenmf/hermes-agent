@@ -28,6 +28,27 @@ def kanban_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Live status aliases
+# ---------------------------------------------------------------------------
+
+
+def test_live_status_for_maps_internal_compatibility_aliases():
+    assert kb.LIVE_STATUSES == {"working", "waiting", "blocked", "dormant"}
+    assert kb.live_status_for("ready") == "working"
+    assert kb.live_status_for("queue") == "working"
+    assert kb.live_status_for("running") == "working"
+    assert kb.live_status_for("in_progress") == "working"
+    assert kb.live_status_for("review") == "working"
+    assert kb.live_status_for("todo") == "waiting"
+    assert kb.live_status_for("scheduled") == "waiting"
+    assert kb.live_status_for("blocked") == "blocked"
+    assert kb.live_status_for("triage") == "dormant"
+    # Completion/history states are not live availability states.
+    assert kb.live_status_for("done") == "done"
+    assert kb.live_status_for("archived") == "archived"
+
+
+# ---------------------------------------------------------------------------
 # Schema / init
 # ---------------------------------------------------------------------------
 
@@ -190,6 +211,102 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_events_run" in indexes
 
 
+
+
+# ---------------------------------------------------------------------------
+# Canonical status migration backup / dry-run / rollback proof
+# ---------------------------------------------------------------------------
+
+
+def test_canonical_status_migration_dry_run_reports_aliases_parent_gates_and_no_mutation(kanban_home):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="open parent", assignee="alice")
+        child = kb.create_task(conn, title="racy child", assignee="bob", parents=[parent])
+        blocked = kb.create_task(conn, title="human blocker", assignee="carol")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (blocked,))
+        before = {row["id"]: row["status"] for row in conn.execute("SELECT id, status FROM tasks")}
+
+    report = kb.canonical_status_migration_dry_run(kanban_home / "kanban.db")
+
+    with kb.connect() as conn:
+        after = {row["id"]: row["status"] for row in conn.execute("SELECT id, status FROM tasks")}
+
+    assert after == before
+    assert report["no_live_mutation"] is True
+    assert report["legacy_storage_alias_count"] >= 2
+    assert report["parent_gated_waiting_count"] == 1
+    assert report["blocked_human_audit_count"] == 1
+    child_report = next(item for item in report["tasks"] if item["task_id"] == child)
+    assert child_report["storage_status"] == "ready"
+    assert child_report["proposed_canonical_status"] == "waiting"
+    assert child_report["parent_gated_waiting"] is True
+    assert child_report["would_change"] is True
+    blocked_report = next(item for item in report["tasks"] if item["task_id"] == blocked)
+    assert blocked_report["proposed_canonical_status"] == "blocked"
+    assert blocked_report["blocker_human_audit"].startswith("requires-review")
+
+
+def test_kanban_backup_and_rollback_proof_are_deterministic_fixture_artifacts(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        kb.create_task(conn, title="child", assignee="bob", parents=[parent])
+
+    backup_dir = tmp_path / "backups"
+    metadata = kb.create_kanban_backup(
+        kanban_home / "kanban.db",
+        output_dir=backup_dir,
+        timestamp="20260604T000000Z",
+    )
+
+    backup_path = Path(metadata["backup_path"])
+    metadata_path = Path(metadata["metadata_path"])
+    assert backup_path == backup_dir / "kanban-20260604T000000Z.sqlite3"
+    assert metadata_path == backup_dir / "kanban-20260604T000000Z.metadata.json"
+    assert backup_path.exists()
+    assert metadata_path.exists()
+    assert metadata["backup_sha256"]
+    assert metadata["table_counts"]["tasks"] == 2
+    assert "restore_instructions" in metadata
+    assert "schema_sha256" in metadata["schema"]
+
+    proof = kb.verify_kanban_backup_restore(backup_path, temp_dir=tmp_path / "restore")
+
+    assert proof["ok"] is True
+    assert Path(proof["restored_path"]).exists()
+    assert proof["backup_sha256"] == metadata["backup_sha256"]
+    assert proof["backup_sha256"] == proof["restored_sha256"]
+    assert proof["source_table_counts"] == proof["restored_table_counts"]
+    assert proof["source_task_status_distribution"] == proof["restored_task_status_distribution"]
+    assert proof["source_integrity_check"] == ["ok"]
+    assert proof["restored_integrity_check"] == ["ok"]
+
+
+def test_all_boards_backup_covers_every_project_without_autocreating_missing_dbs(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        kb.create_task(conn, title="default task", assignee="alice")
+    kb.create_board("project-a", name="Project A")
+    with kb.connect(board="project-a") as conn:
+        kb.create_task(conn, title="project task", assignee="bob")
+    kb.write_board_metadata("metadata-only", name="Metadata Only")
+
+    result = kb.create_all_kanban_backups(
+        output_dir=tmp_path / "all-project-backups",
+        timestamp="20260604T010203Z",
+    )
+
+    assert result["artifact_type"] == "hermes-kanban-all-boards-backup"
+    assert result["board_count"] == 2
+    assert {item["board"] for item in result["backups"]} == {"default", "project-a"}
+    assert {item["board"] for item in result["skipped"]} == {"metadata-only"}
+    for item in result["backups"]:
+        assert Path(item["backup_path"]).exists()
+        assert Path(item["metadata_path"]).exists()
+        assert Path(item["backup_path"]).parent == tmp_path / "all-project-backups" / item["board"]
+        proof = kb.verify_kanban_backup_restore(item["backup_path"], temp_dir=tmp_path / f"restore-{item['board']}")
+        assert proof["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
@@ -209,8 +326,29 @@ def test_create_task_with_parent_is_todo_until_parent_done(kanban_home):
         p = kb.create_task(conn, title="parent")
         c = kb.create_task(conn, title="child", parents=[p])
         assert kb.get_task(conn, c).status == "todo"
+        assert kb.canonical_live_status_for_task(conn, c) == "waiting"
         kb.complete_task(conn, p, result="ok")
         assert kb.get_task(conn, c).status == "ready"
+        assert kb.canonical_live_status_for_task(conn, c) == "working"
+
+
+def test_canonical_live_status_for_parent_gated_child_is_waiting(kanban_home):
+    """Downstream canonical backend adapter reports waiting, not todo.
+
+    The legacy storage row still uses ``todo`` in this non-invasive slice so
+    old dispatchers stay compatible, but user/API callers should consume the
+    canonical projection and see a parent-gated child as ``waiting``.
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="blocked parent", assignee="alice")
+        child = kb.create_task(conn, title="gated child", assignee="bob", parents=[parent])
+
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.canonical_live_status_for_task(conn, child) == "waiting"
+
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (child,))
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.canonical_live_status_for_task(conn, child) == "waiting"
 
 
 def test_create_task_unknown_parent_errors(kanban_home):
@@ -307,7 +445,8 @@ def test_recompute_ready_cascades_through_chain(kanban_home):
 
 
 def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
-    """blocked tasks with all parents done should be promoted to ready."""
+    """blocked tasks with all parents done should be promoted to ready,
+    unless the circuit-breaker failure limit has been reached."""
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent", assignee="a")
         child = kb.create_task(
@@ -316,16 +455,16 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         # Complete the parent
         kb.claim_task(conn, parent)
         kb.complete_task(conn, parent, result="ok")
-        # Manually block the child (simulates a worker that failed
-        # after the parent finished)
+        # Manually block the child with zero failures (simulates a
+        # dependency block, not a circuit-breaker block).
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
+            "UPDATE tasks SET status='blocked', consecutive_failures=0, "
+            "last_failure_error=NULL WHERE id=?",
             (child,),
         )
         conn.commit()
         assert kb.get_task(conn, child).status == "blocked"
-        # recompute_ready should promote blocked → ready and reset failures
+        # recompute_ready should promote blocked → ready
         promoted = kb.recompute_ready(conn)
         assert promoted == 1
         task = kb.get_task(conn, child)
@@ -815,6 +954,149 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_recompute_ready_skips_tasks_at_failure_limit(kanban_home):
+    """recompute_ready must not auto-recover tasks whose consecutive_failures
+    has reached the circuit-breaker limit (#35072).
+
+    Without this guard, a task that repeatedly exhausts its iteration
+    budget would cycle forever: block → auto-recover (counter reset)
+    → respawn → budget exhausted → block → …
+    """
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        child = kb.create_task(conn, title="child", assignee="a",
+                               parents=[parent])
+        # Complete the parent so the child's dependencies are satisfied.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, summary="done")
+
+        # Simulate the child having exhausted its budget twice,
+        # hitting the default failure limit (2).
+        kb.claim_task(conn, child)
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        kb._record_task_failure(
+            conn, child, error="budget exhausted 2",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, child)
+        assert task.status == "blocked"
+        assert task.consecutive_failures >= 2
+
+        # recompute_ready must NOT promote this task — the circuit
+        # breaker has tripped and it should stay blocked.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Explicit unblock should still work and reset the counter.
+        assert kb.unblock_task(conn, child)
+        task = kb.get_task(conn, child)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+
+def test_recompute_ready_recovers_below_limit(kanban_home):
+    """recompute_ready auto-recovers blocked tasks that haven't hit the
+    failure limit yet — the counter is preserved across recovery."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="task", assignee="a")
+        kb.claim_task(conn, t)
+        # One failure, below the default limit of 2.
+        kb._record_task_failure(
+            conn, t, error="budget exhausted 1",
+            outcome="timed_out", release_claim=True, end_run=True,
+            failure_limit=2,
+        )
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 1
+
+        # Simulate being blocked by something else (not circuit breaker).
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked' WHERE id = ?", (t,),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        # Counter must be preserved, not reset.
+        assert task.consecutive_failures == 1
+
+
+def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
+    """The guard's effective limit must follow the same resolution order
+    as the circuit breaker (#35072): per-task max_retries → dispatcher
+    failure_limit → DEFAULT_FAILURE_LIMIT.
+
+    Without threading the dispatcher's ``kanban.failure_limit`` through,
+    the guard falls back to DEFAULT_FAILURE_LIMIT and disagrees with the
+    breaker — sticking a task prematurely (config limit > default) or
+    letting a tripped task escape (config limit < default).
+    """
+    with kb.connect() as conn:
+        # Config allows MORE retries than the default. A task blocked
+        # with failures below the configured limit must still recover.
+        t = kb.create_task(conn, title="lenient", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=? "
+            "WHERE id=?",
+            (kb.DEFAULT_FAILURE_LIMIT, t),
+        )
+        conn.commit()
+        # Default-limit call would stick it (failures >= default).
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, t).status == "blocked"
+        # Dispatcher configured a higher limit → recover, preserve counter.
+        promoted = kb.recompute_ready(
+            conn, failure_limit=kb.DEFAULT_FAILURE_LIMIT + 2
+        )
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == kb.DEFAULT_FAILURE_LIMIT
+
+        # Config allows FEWER retries than the default. A task at the
+        # stricter limit must stay blocked even though it's below default.
+        t2 = kb.create_task(conn, title="strict", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1 "
+            "WHERE id=?",
+            (t2,),
+        )
+        conn.commit()
+        # Default-limit (2) would recover it (1 < 2).
+        # Stricter config limit (1) must keep it blocked (1 >= 1).
+        assert kb.recompute_ready(conn, failure_limit=1) == 0
+        assert kb.get_task(conn, t2).status == "blocked"
+
+
+def test_recompute_ready_per_task_max_retries_overrides_dispatcher(kanban_home):
+    """A per-task ``max_retries`` wins over the dispatcher failure_limit,
+    matching ``_record_task_failure``'s resolution order."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="per-task", assignee="a")
+        # Per-task allows 4 retries; dispatcher config says 2.
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=2, "
+            "max_retries=4 WHERE id=?",
+            (t,),
+        )
+        conn.commit()
+        # failures(2) < per-task limit(4) → recover, despite dispatcher=2.
+        promoted = kb.recompute_ready(conn, failure_limit=2)
+        assert promoted == 1
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 2
+
+
 # ---------------------------------------------------------------------------
 # Parent-completion invariant at the claim gate (RCA t_a6acd07d)
 # ---------------------------------------------------------------------------
@@ -969,6 +1251,26 @@ def test_archive_hides_from_default_list(kanban_home):
         assert kb.archive_task(conn, t)
         assert len(kb.list_tasks(conn)) == 0
         assert len(kb.list_tasks(conn, include_archived=True)) == 1
+
+
+def test_blocked_comment_warning_points_to_direct_internal_comm_not_contact_tasks(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blocked", assignee="worker")
+        kb.block_task(conn, tid, reason="needs human input")
+
+        warning = kb.blocked_comment_action_warning(conn, tid, "please message the worker")
+        assert warning == kb.BLOCKED_COMMENT_ACTION_WARNING
+        assert "direct profile command" in warning
+        assert "structured internal message" in warning
+        assert "contact task" not in warning.lower()
+
+        kb.add_comment(conn, tid, "coordinator", "please message the worker")
+        events = kb.list_events(conn, tid)
+        payloads = [event.payload for event in events if event.kind == "blocked_comment_action_warning"]
+        assert payloads
+        last_payload = payloads[-1]
+        assert last_payload is not None
+        assert "contact task" not in last_payload["warning"].lower()
 
 
 def test_delete_archived_task_removes_related_rows(kanban_home):
