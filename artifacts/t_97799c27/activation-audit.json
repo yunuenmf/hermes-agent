@@ -1,0 +1,826 @@
+{
+  "downstream_main": "08b886c2020b5de21e88b403c82d2110bc71d212",
+  "prs": [
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": true,
+          "head_equals_merge": false,
+          "path": "docs/downstream-kanban-canonical-backend-rollout.md",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "plugins/kanban/dashboard/plugin_api.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "0c77f50078b5cc5b90dcd2c160935e974a7054cf",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-04T07:36:09Z",
+      "pr": 14,
+      "source_presence_by_file_equality": "partial_or_overlapped_in_runtime_worktree",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "hermes_cli/kanban.py",
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/plugin_api.py",
+          "tests/hermes_cli/test_kanban_db.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/plugin_api.py"
+        ],
+        "files_total": 5,
+        "missing_in_runtime_worktree": [],
+        "runtime_head_equals_main": 1,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 1,
+        "runtime_worktree_equals_merge": 0
+      },
+      "title": "kanban: add downstream canonical status projection",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/14"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": true,
+          "head_equals_merge": true,
+          "path": "docs/downstream-kanban-canonical-backend-rollout.md",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": true,
+          "path": "tests/hermes_cli/test_kanban_cli.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "09bb6c4d77855a01d90d7c90861e95674322639e",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-04T11:19:56Z",
+      "pr": 15,
+      "source_presence_by_file_equality": "partial_or_overlapped_in_runtime_worktree",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "hermes_cli/kanban.py",
+          "hermes_cli/kanban_db.py",
+          "tests/hermes_cli/test_kanban_cli.py",
+          "tests/hermes_cli/test_kanban_db.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "hermes_cli/kanban_db.py"
+        ],
+        "files_total": 5,
+        "missing_in_runtime_worktree": [],
+        "runtime_head_equals_main": 1,
+        "runtime_head_equals_merge": 2,
+        "runtime_worktree_equals_main": 1,
+        "runtime_worktree_equals_merge": 2
+      },
+      "title": "kanban: add canonical status migration safety gate",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/15"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "agent/conversation_loop.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "docs/plans/2026-06-04-maintenance-status-lines.md",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/maintenance_status_lines.py",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_maintenance_status_lines.py",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        }
+      ],
+      "merge_commit": "127b8a88ca0ef8f24c704e4772054499c18b492b",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-04T15:39:36Z",
+      "pr": 17,
+      "source_presence_by_file_equality": "partial_or_overlapped_in_runtime_worktree",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "agent/conversation_loop.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "agent/conversation_loop.py",
+          "docs/plans/2026-06-04-maintenance-status-lines.md",
+          "hermes_cli/maintenance_status_lines.py",
+          "tests/hermes_cli/test_maintenance_status_lines.py"
+        ],
+        "files_total": 4,
+        "missing_in_runtime_worktree": [],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 3,
+        "runtime_worktree_equals_merge": 3
+      },
+      "title": "fix: auto-append maintenance status lines",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/17"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": ".pr-body.md",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "agent/prompt_builder.py",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "skills/devops/kanban-orchestrator/SKILL.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "skills/devops/kanban-worker/SKILL.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/tools/test_kanban_tools.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tools/kanban_tools.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "website/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "website/docs/user-guide/skills/bundled/devops/devops-kanban-worker.md",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        }
+      ],
+      "merge_commit": "2f6d4077242fd426925adb6ee10d3526f98f8401",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-04T16:17:45Z",
+      "pr": 18,
+      "source_presence_by_file_equality": "partial_or_overlapped_in_runtime_worktree",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "skills/devops/kanban-orchestrator/SKILL.md",
+          "skills/devops/kanban-worker/SKILL.md",
+          "tests/tools/test_kanban_tools.py",
+          "tools/kanban_tools.py",
+          "website/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator.md"
+        ],
+        "dirty_or_untracked_touched": [
+          ".pr-body.md",
+          "agent/prompt_builder.py",
+          "skills/devops/kanban-orchestrator/SKILL.md",
+          "skills/devops/kanban-worker/SKILL.md",
+          "tests/tools/test_kanban_tools.py",
+          "tools/kanban_tools.py",
+          "website/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator.md",
+          "website/docs/user-guide/skills/bundled/devops/devops-kanban-worker.md"
+        ],
+        "files_total": 8,
+        "missing_in_runtime_worktree": [],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 3,
+        "runtime_worktree_equals_merge": 4
+      },
+      "title": "feat: require three-layer tracking for functionality handoffs",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/18"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "docs/plans/2026-06-02-alert-notification-routing.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "plugins/kanban/dashboard/plugin_api.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "skills/devops/kanban-orchestrator/SKILL.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "skills/devops/kanban-worker/SKILL.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_cli.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/plugins/test_kanban_dashboard_plugin.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/tools/test_kanban_tools.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tools/kanban_tools.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "website/docs/user-guide/features/kanban.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "a9d0d315e8532b9410a2cf8e38a64e1ff94bcfa8",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-05T18:05:02Z",
+      "pr": 19,
+      "source_presence_by_file_equality": "not_present_in_runtime_worktree_for_touched_files",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "docs/plans/2026-06-02-alert-notification-routing.md",
+          "hermes_cli/kanban.py",
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/plugin_api.py",
+          "skills/devops/kanban-orchestrator/SKILL.md",
+          "skills/devops/kanban-worker/SKILL.md",
+          "tests/hermes_cli/test_kanban_cli.py",
+          "tests/hermes_cli/test_kanban_db.py",
+          "tests/plugins/test_kanban_dashboard_plugin.py",
+          "tests/tools/test_kanban_tools.py",
+          "tools/kanban_tools.py",
+          "website/docs/user-guide/features/kanban.md"
+        ],
+        "dirty_or_untracked_touched": [
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/plugin_api.py",
+          "skills/devops/kanban-orchestrator/SKILL.md",
+          "skills/devops/kanban-worker/SKILL.md",
+          "tests/tools/test_kanban_tools.py",
+          "tools/kanban_tools.py"
+        ],
+        "files_total": 12,
+        "missing_in_runtime_worktree": [
+          "docs/plans/2026-06-02-alert-notification-routing.md"
+        ],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 0,
+        "runtime_worktree_equals_merge": 0
+      },
+      "title": "fix(kanban): compact agent show output",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/19"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "docs/project-autonomy-levels.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "plugins/kanban/dashboard/dist/index.js",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "plugins/kanban/dashboard/plugin_api.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_boards.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/plugins/test_kanban_dashboard_plugin.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "11ec5e8c45d645cbdf0ef3342ffcf31d747b5c8c",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-05T11:36:14Z",
+      "pr": 21,
+      "source_presence_by_file_equality": "not_present_in_runtime_worktree_for_touched_files",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "docs/project-autonomy-levels.md",
+          "hermes_cli/kanban.py",
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/dist/index.js",
+          "plugins/kanban/dashboard/plugin_api.py",
+          "tests/hermes_cli/test_kanban_boards.py",
+          "tests/plugins/test_kanban_dashboard_plugin.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "hermes_cli/kanban_db.py",
+          "plugins/kanban/dashboard/dist/index.js",
+          "plugins/kanban/dashboard/plugin_api.py"
+        ],
+        "files_total": 7,
+        "missing_in_runtime_worktree": [
+          "docs/project-autonomy-levels.md"
+        ],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 0,
+        "runtime_worktree_equals_merge": 0
+      },
+      "title": "feat(kanban): add project autonomy levels",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/21"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": ".hermes/plans/project-autonomy-dispatch-owner.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "agent/agent_runtime_helpers.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "agent/memory_write_bridge.py",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "agent/tool_executor.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "gateway/run.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "plugins/memory/holographic/__init__.py",
+          "worktree_equals_main": true,
+          "worktree_equals_merge": true
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/agent/test_memory_capacity_fact_store_fallback.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/gateway/test_kanban_dispatcher_ownership.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_boards.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_db.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "5edd90ea07d3c12703f1db537c31d5bffdef68c0",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-05T17:55:51Z",
+      "pr": 22,
+      "source_presence_by_file_equality": "partial_or_overlapped_in_runtime_worktree",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          ".hermes/plans/project-autonomy-dispatch-owner.md",
+          "agent/agent_runtime_helpers.py",
+          "agent/tool_executor.py",
+          "gateway/run.py",
+          "hermes_cli/kanban.py",
+          "hermes_cli/kanban_db.py",
+          "tests/agent/test_memory_capacity_fact_store_fallback.py",
+          "tests/gateway/test_kanban_dispatcher_ownership.py",
+          "tests/hermes_cli/test_kanban_boards.py",
+          "tests/hermes_cli/test_kanban_db.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "agent/agent_runtime_helpers.py",
+          "agent/memory_write_bridge.py",
+          "agent/tool_executor.py",
+          "gateway/run.py",
+          "hermes_cli/kanban_db.py",
+          "plugins/memory/holographic/__init__.py",
+          "tests/agent/test_memory_capacity_fact_store_fallback.py"
+        ],
+        "files_total": 12,
+        "missing_in_runtime_worktree": [
+          ".hermes/plans/project-autonomy-dispatch-owner.md",
+          "tests/gateway/test_kanban_dispatcher_ownership.py"
+        ],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 2,
+        "runtime_worktree_equals_merge": 2
+      },
+      "title": "test: cover Task 2 memory recall after compaction",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/22"
+    },
+    {
+      "files": [
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "docs/hermes-maintenance-lineage.json",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "docs/hermes-maintenance-self-lineage-status.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "hermes_cli/kanban_status_lines.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "scripts/hermes-maintenance-status.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": true,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "skills/devops/kanban-orchestrator/SKILL.md",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        },
+        {
+          "dirty_touched": false,
+          "head_equals_main": false,
+          "head_equals_merge": false,
+          "path": "tests/hermes_cli/test_kanban_status_lines.py",
+          "worktree_equals_main": false,
+          "worktree_equals_merge": false
+        }
+      ],
+      "merge_commit": "08b886c2020b5de21e88b403c82d2110bc71d212",
+      "merge_commit_ancestor_of_runtime_head": false,
+      "merge_in_downstream_main": true,
+      "merged_at": "2026-06-05T18:05:06Z",
+      "pr": 24,
+      "source_presence_by_file_equality": "not_present_in_runtime_worktree_for_touched_files",
+      "state": "MERGED",
+      "stats": {
+        "different_from_main_worktree": [
+          "docs/hermes-maintenance-lineage.json",
+          "docs/hermes-maintenance-self-lineage-status.md",
+          "hermes_cli/kanban_status_lines.py",
+          "scripts/hermes-maintenance-status.py",
+          "skills/devops/kanban-orchestrator/SKILL.md",
+          "tests/hermes_cli/test_kanban_status_lines.py"
+        ],
+        "dirty_or_untracked_touched": [
+          "skills/devops/kanban-orchestrator/SKILL.md"
+        ],
+        "files_total": 6,
+        "missing_in_runtime_worktree": [
+          "docs/hermes-maintenance-lineage.json",
+          "docs/hermes-maintenance-self-lineage-status.md",
+          "hermes_cli/kanban_status_lines.py",
+          "scripts/hermes-maintenance-status.py",
+          "tests/hermes_cli/test_kanban_status_lines.py"
+        ],
+        "runtime_head_equals_main": 0,
+        "runtime_head_equals_merge": 0,
+        "runtime_worktree_equals_main": 0,
+        "runtime_worktree_equals_merge": 0
+      },
+      "title": "fix: render generic self lineage status lines downstream",
+      "url": "https://github.com/yunuenmf/hermes-agent/pull/24"
+    }
+  ],
+  "runtime_branch": "feature/gateway-fragmentation-finalize-reset",
+  "runtime_checkout": "/home/engs2272/.hermes/hermes-agent",
+  "runtime_dirty_file_count": 49,
+  "runtime_dirty_paths": [
+    ".pr-body.md",
+    "EMERGENCY_TERMINAL_RECOVERY.md",
+    "agent/agent_runtime_helpers.py",
+    "agent/auxiliary_client.py",
+    "agent/chat_completion_helpers.py",
+    "agent/codex_responses_adapter.py",
+    "agent/codex_runtime.py",
+    "agent/conversation_loop.py",
+    "agent/memory_write_bridge.py",
+    "agent/prompt_builder.py",
+    "agent/tool_executor.py",
+    "artifacts/",
+    "cli.py",
+    "docs/plans/2026-06-04-maintenance-status-lines.md",
+    "gateway/platforms/matrix.py",
+    "gateway/run.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/kanban_db.py.bak_t_65d370e9",
+    "hermes_cli/maintenance_status_lines.py",
+    "package-lock.json",
+    "package.json",
+    "plugins/kanban/dashboard/dist/index.js",
+    "plugins/kanban/dashboard/dist/index.js.bak_t_65d370e9",
+    "plugins/kanban/dashboard/dist/style.css",
+    "plugins/kanban/dashboard/plugin_api.py",
+    "plugins/kanban/dashboard/plugin_api.py.bak_t_65d370e9",
+    "plugins/memory/holographic/__init__.py",
+    "run_agent.py",
+    "skills/devops/kanban-orchestrator/SKILL.md",
+    "skills/devops/kanban-worker/SKILL.md",
+    "tests/agent/test_auxiliary_client.py",
+    "tests/agent/test_memory_capacity_fact_store_fallback.py",
+    "tests/agent/transports/test_codex_transport.py",
+    "tests/gateway/test_fragmentation_command.py",
+    "tests/hermes_cli/test_kanban_blocked_sticky.py",
+    "tests/hermes_cli/test_maintenance_status_lines.py",
+    "tests/hermes_cli/test_timeouts.py",
+    "tests/run_agent/test_create_openai_client_reuse.py",
+    "tests/run_agent/test_run_agent_codex_responses.py",
+    "tests/run_agent/test_tls_fd_recycle_corruption.py",
+    "tests/tools/test_kanban_tools.py",
+    "tests/tools/test_skill_size_limits.py",
+    "tools/kanban_tools.py",
+    "tools/send_message_tool.py",
+    "tools/skills_tool.py",
+    "ui-tui/package-lock.json",
+    "web/package-lock.json",
+    "website/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator.md",
+    "website/docs/user-guide/skills/bundled/devops/devops-kanban-worker.md"
+  ],
+  "runtime_head": "22df1f29585156b2ef09549969afd0b7bf490bc1"
+}
