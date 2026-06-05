@@ -7,7 +7,8 @@ The level is visible and editable in the Kanban Web UI board switcher. It can al
 ```bash
 hermes kanban boards create <slug> --autonomy-level High
 hermes kanban boards set-autonomy <slug> Full
-hermes kanban --board <slug> boards show
+hermes kanban boards switch <slug>
+hermes kanban boards show
 hermes kanban boards list --json
 ```
 
