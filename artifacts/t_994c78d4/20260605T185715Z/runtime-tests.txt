@@ -1,0 +1,10 @@
+command: source venv/bin/activate && pytest -q tests/hermes_cli/test_maintenance_status_lines.py tests/hermes_cli/test_kanban_status_lines.py tests/tools/test_kanban_tools.py tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/plugins/test_kanban_dashboard_plugin.py tests/hermes_cli/test_kanban_boards.py tests/gateway/test_kanban_dispatcher_ownership.py tests/agent/test_memory_capacity_fact_store_fallback.py
+........................................................................ [ 13%]
+........................................................................ [ 26%]
+........................................................................ [ 39%]
+........................................................................ [ 52%]
+........................................................................ [ 65%]
+........................................................................ [ 78%]
+........................................................................ [ 91%]
+................................................                         [100%]
+552 passed in 108.50s (0:01:48)
