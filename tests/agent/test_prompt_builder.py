@@ -55,6 +55,12 @@ class TestGuidanceConstants:
         assert "Do not create Kanban contact tasks merely" in KANBAN_GUIDANCE
         assert "Use Kanban for durable work items" in KANBAN_GUIDANCE
 
+    def test_kanban_guidance_executes_recommended_defaults_instead_of_blocking(self):
+        assert "recommended/default choice" in KANBAN_GUIDANCE
+        assert "execute that default" in KANBAN_GUIDANCE
+        assert "Routine routing/unblocking" in KANBAN_GUIDANCE
+        assert "working/waiting states, not blocked" in KANBAN_GUIDANCE
+
 
 # =========================================================================
 # Context injection scanning
