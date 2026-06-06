@@ -155,6 +155,12 @@ kanban_complete(
 
 If a `kanban_create` call fails (exception, tool_error), the card was NOT created — do not include a phantom id for it. Retry the create, or omit the id and mention the failure in your summary. The prose-scan pass also catches `t_<hex>` references in your free-form summary that don't resolve; these don't block the completion but show up as advisory warnings on the task in the dashboard.
 
+## Blocker boundary: recommended defaults are not blockers
+
+A task with a recommended/default choice is not human-blocked merely because a choice exists. Execute the recommended/default path and record the assumption in the handoff unless the body explicitly says the recommendation is only a draft that must not be used without approval. Routine Kanban routing/unblocking, implementation continuation, review/CI waits, and stale process uncertainty are `working` or `waiting`, not `blocked`.
+
+Use `kanban_block` only when a human decision/action is truly required and no accepted default is available — for example missing credentials, destructive/global changes, production deployment/release approval, or an undecided risk/UX tradeoff. If you do block, name the exact human-only gate in one sentence and put any longer context in a comment.
+
 ## Block reasons that get answered fast
 
 Bad: `"stuck"` — the human has no context.
