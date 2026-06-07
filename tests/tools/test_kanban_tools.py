@@ -573,14 +573,14 @@ def test_review_required_high_autonomy_routes_to_coordinator_review(worker_env):
     payload = json.loads(out)
     assert payload["ok"] is True
     assert payload["status"] == "coordinator_review"
-    assert payload["live_status"] == "waiting"
+    assert payload["live_status"] == "working"
 
     conn = kb.connect()
     try:
         task = kb.get_task(conn, worker_env)
         assert task is not None
         assert task.status == "coordinator_review"
-        assert kb.canonical_live_status(task.status) == "waiting"
+        assert kb.canonical_live_status(task.status) == "working"
         events = kb.list_events(conn, worker_env)
         assert events[-1].kind == "coordinator_review"
     finally:

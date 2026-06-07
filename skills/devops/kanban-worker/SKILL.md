@@ -15,7 +15,7 @@ metadata:
 
 ## Live status vocabulary
 
-Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked`, `dormant`. Internal Kanban DB/workflow aliases remain valid during migration: `ready`/`queue`/`running`/`in_progress`/`review` map to `working`; dependency-held `todo` and `scheduled` map to `waiting`; unspecced `triage` maps to `dormant`; `done` is completion history only. Reserve `blocked` for a specific active task/duty/dependency prevented by human action.
+Use canonical live statuses in user-facing prose: `working`, `waiting`, `blocked`, `dormant`. Internal Kanban DB/workflow aliases remain valid during migration: `ready`/`queue`/`running`/`in_progress`/`review`/`coordinator_review` map to `working`; dependency-held `todo` and `scheduled` map to `waiting`; unspecced `triage` maps to `dormant`; `done` is completion history only. Reserve `blocked` for a specific active task/duty/dependency prevented by human action.
 
 For Matrix/profile-facing project communication, use generic `Self status:` and `Lineage status:` lines. Do not introduce role-specific replacements such as `Coordinator status:`, and do not use legacy `Blocker status:` or `NOT BLOCKED` wording in new prompts. `Self status` describes this profile's own active action/wait/human blocker/dormant condition; `Lineage status` aggregates structural descendants and is separate from task dependency links. When deterministic output is needed, prefer the repo helper `python scripts/render_status_lines.py --self ... --lineage-count ...` over recomputing the wording from broad LLM context.
 
