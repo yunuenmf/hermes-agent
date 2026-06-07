@@ -1001,7 +1001,7 @@ def _handle_block(args: dict, **kw) -> str:
                         task_id=tid,
                         run_id=run.id if run else None,
                         status="coordinator_review",
-                        live_status="waiting",
+                        live_status="working",
                     )
                 if _review_reason_is_deployment_cluster(str(reason)):
                     ok = kb.route_task_to_status(
