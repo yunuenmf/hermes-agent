@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -39,6 +40,7 @@ def test_live_status_for_maps_internal_compatibility_aliases():
     assert kb.live_status_for("running") == "working"
     assert kb.live_status_for("in_progress") == "working"
     assert kb.live_status_for("review") == "working"
+    assert kb.live_status_for("coordinator_review") == "working"
     assert kb.live_status_for("todo") == "waiting"
     assert kb.live_status_for("scheduled") == "waiting"
     assert kb.live_status_for("blocked") == "blocked"
@@ -3246,6 +3248,115 @@ def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_s
 def _set_task_status(conn: sqlite3.Connection, task_id: str, status: str) -> None:
     """Test helper: set a task's status directly."""
     conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
+
+
+def _coordinator_review_rows(conn: sqlite3.Connection, source_task_id: str):
+    return conn.execute(
+        "SELECT t.* FROM tasks t "
+        "JOIN task_events e ON e.task_id = ? "
+        "WHERE e.kind = 'coordinator_review_requested' "
+        "AND json_extract(e.payload, '$.review_task_id') = t.id "
+        "ORDER BY t.created_at ASC",
+        (source_task_id,),
+    ).fetchall()
+
+
+def test_blocked_task_comment_alone_is_not_dispatch(kanban_home, all_assignees_spawnable):
+    """A comment on a blocked task is durable context, not a wake-up signal."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="human-held", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = ? WHERE id = ?",
+            (kb.DEFAULT_FAILURE_LIMIT, t),
+        )
+        kb.add_comment(conn, t, "coordinator", "please continue from this comment")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.spawned == []
+        blocked = kb.get_task(conn, t)
+        assert blocked is not None
+        assert blocked.status == "blocked"
+
+
+def test_block_task_creates_dispatchable_coordinator_review_holder(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    monkeypatch.setenv("HERMES_KANBAN_COORDINATOR_PROFILE", "coordinator")
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="needs review", assignee="alice")
+        kb.claim_task(conn, t)
+
+        assert kb.block_task(conn, t, reason="review-required: PR is ready")
+
+        holders = _coordinator_review_rows(conn, t)
+        assert len(holders) == 1
+        holder = holders[0]
+        assert holder["assignee"] == "coordinator"
+        assert holder["status"] == "coordinator_review"
+        assert "delegate non-trivial implementation" in holder["body"]
+        assert "do not prompt Yunuen unless" in holder["body"]
+        assert "credentials/secrets" in holder["body"]
+        assert json.loads(holder["skills"]) == ["kanban-orchestrator"]
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert (holder["id"], "coordinator", "") in res.spawned
+        assert all(spawn[0] != t for spawn in res.spawned)
+
+
+def test_active_pr_respawn_guard_creates_coordinator_review_holder(
+    kanban_home, monkeypatch, all_assignees_spawnable
+):
+    monkeypatch.setenv("HERMES_KANBAN_COORDINATOR_PROFILE", "coordinator")
+    spawned: list[str] = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+        return 1234
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="opened PR", assignee="alice")
+        kb.claim_task(conn, t)
+        kb._record_task_failure(
+            conn,
+            t,
+            error="first worker attempt stopped after opening PR",
+            outcome="timed_out",
+            release_claim=True,
+            end_run=True,
+            failure_limit=3,
+        )
+        kb.add_comment(conn, t, "worker", "PR: https://github.com/org/repo/pull/31")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        holders = _coordinator_review_rows(conn, t)
+        assert len(holders) == 1
+        holder = holders[0]
+        holder_task = kb.get_task(conn, holder["id"])
+        assert holder_task is not None
+        assert holder_task.status == "running"
+        assert spawned == [holder["id"]]
+        assert res.respawn_guarded == [(t, "active_pr")]
+        event = next(
+            e for e in kb.list_events(conn, t)
+            if e.kind == "coordinator_review_requested"
+        )
+        assert event.payload["category"] == "active_pr"
+        assert event.payload["trigger_event"] == "respawn_guarded"
+
+
+def test_claim_review_task_transitions_coordinator_review_to_running(kanban_home):
+    """Coordinator-review holders are executable lanes, not passive comments."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review blocker", assignee="coordinator")
+        _set_task_status(conn, t, "coordinator_review")
+        claimed = kb.claim_review_task(conn, t)
+
+    assert claimed is not None
+    assert claimed.status == "running"
+    assert claimed.claim_lock is not None
 
 
 def test_claim_review_task_transitions_to_running(kanban_home):

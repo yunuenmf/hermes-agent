@@ -111,10 +111,10 @@ CANONICAL_STATUS_FOR_STORAGE_STATUS = {
     "ready": "working",
     "running": "working",
     "review": "working",
+    "coordinator_review": "working",
     "todo": "waiting",
     "scheduled": "waiting",
     "holding": "waiting",
-    "coordinator_review": "waiting",
     "deployment_cluster": "blocked",
     "blocked": "blocked",
     "triage": "dormant",
@@ -134,6 +134,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 AUTONOMY_LEVELS = ("Low", "Medium", "High", "Full")
 DEFAULT_AUTONOMY_LEVEL = "Medium"
+DEFAULT_COORDINATOR_REVIEW_PROFILE = "coordinator_hermes_maintenance"
 AUTONOMY_LEVEL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "Low": {
         "summary": "Granular human-reviewed project operation below the current baseline.",
@@ -200,10 +201,10 @@ _LIVE_STATUS_ALIASES = {
     "running": "working",
     "in_progress": "working",
     "review": "working",
+    "coordinator_review": "working",
     "todo": "waiting",
     "scheduled": "waiting",
     "holding": "waiting",
-    "coordinator_review": "waiting",
     "deployment_cluster": "blocked",
     "blocked": "blocked",
     "triage": "dormant",
@@ -2989,6 +2990,114 @@ def create_task(
     raise RuntimeError("unreachable")
 
 
+def _coordinator_profile_for_review(board: Optional[str] = None) -> str:
+    """Return the profile that owns coordinator-review holder tasks.
+
+    Board metadata is the authoritative routing surface. The environment knob is
+    a deployment escape hatch for legacy boards that have not yet populated
+    ownership.coordinator_profile. A final maintenance default preserves a
+    deterministic visible lane instead of letting blocker review disappear into
+    comments on the blocked task.
+    """
+    env_profile = os.environ.get("HERMES_KANBAN_COORDINATOR_PROFILE", "").strip()
+    if env_profile:
+        return _canonical_assignee(env_profile) or env_profile
+    try:
+        meta = read_board_metadata(board if board else get_current_board())
+        ownership = meta.get("ownership") if isinstance(meta, dict) else None
+        if isinstance(ownership, dict):
+            profile = str(ownership.get("coordinator_profile") or "").strip()
+            if profile:
+                return _canonical_assignee(profile) or profile
+    except Exception:
+        pass
+    return DEFAULT_COORDINATOR_REVIEW_PROFILE
+
+
+def request_coordinator_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    category: str,
+    reason: Optional[str] = None,
+    trigger_event: Optional[str] = None,
+    board: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """Create or reuse a coordinator-review holder task for a blocker signal.
+
+    The source task may be blocked (human action), ready after a crash/timeout,
+    or todo because of parent dependencies. A comment on that source task is not
+    dispatch; this helper creates a distinct coordinator_review lane row assigned
+    to the board coordinator so the review request is spawnable/visible and
+    auditable.
+    """
+    row = conn.execute(
+        "SELECT id, title, status FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["status"] == "coordinator_review":
+        return None
+
+    category_norm = re.sub(
+        r"[^a-z0-9_.:-]+", "-", (category or "blocker").lower()
+    ).strip("-") or "blocker"
+    key = f"coordinator-review:{task_id}:{category_norm}"
+    coordinator = _coordinator_profile_for_review(board=board)
+    title = f"coordinator-review: {category_norm} for {task_id}"
+    reason_text = (reason or "").strip() or "No reason supplied. Inspect source task events/comments."
+    body = (
+        f"Coordinator review holder for source task {task_id}.\n\n"
+        f"Trigger: {trigger_event or category_norm}\n"
+        f"Source status at request: {row['status']}\n"
+        f"Source title: {row['title']}\n\n"
+        f"Reason/context:\n{reason_text}\n\n"
+        "Coordinator workflow: resolve only trivial admin/routing issues directly; "
+        "delegate non-trivial implementation to the appropriate responsible/profile; "
+        "create a deployment cluster for deployment/restart gates; re-dispatch the "
+        "source task when automated recovery is sufficient; do not prompt Yunuen "
+        "unless the source needs deployment approval, credentials/secrets, destructive "
+        "action, new scope, or another concrete human decision."
+    )
+
+    review_id = create_task(
+        conn,
+        title=title,
+        body=body,
+        assignee=coordinator,
+        created_by="kanban-coordinator-review",
+        parents=[],
+        skills=["kanban-orchestrator"],
+        idempotency_key=key,
+        board=board,
+    )
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'coordinator_review' "
+            "WHERE id = ? AND status IN ('ready', 'running', 'review')",
+            (review_id,),
+        )
+        event_payload = {
+            "review_task_id": review_id,
+            "category": category_norm,
+            "trigger_event": trigger_event,
+            "coordinator_profile": coordinator,
+            "source_status": row["status"],
+            "reason": reason_text[:500],
+        }
+        if payload:
+            event_payload["payload"] = payload
+        _append_event(conn, task_id, "coordinator_review_requested", event_payload)
+        _append_event(
+            conn,
+            review_id,
+            "coordinator_review_holder",
+            {"source_task_id": task_id, "category": category_norm},
+        )
+    return review_id
+
+
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
     parents = list(parents)
     if not parents:
@@ -3801,14 +3910,15 @@ def claim_review_task(
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``review -> running``.
+    """Atomically transition ``review``/``coordinator_review`` -> ``running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``review`` status).
+    already claimed (or is not in a review-holder status).
 
     Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
+    does NOT check parent dependencies — review holders either already passed
+    the worker gate or are coordinator-review control-plane tasks with their
+    own executable lane.
 
     Creates a new run entry so the review agent's lifecycle is tracked
     independently from the original worker run.
@@ -3817,6 +3927,11 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        source = conn.execute(
+            "SELECT status FROM tasks WHERE id = ? AND claim_lock IS NULL",
+            (task_id,),
+        ).fetchone()
+        source_status = source["status"] if source else None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3825,7 +3940,7 @@ def claim_review_task(
                    claim_expires = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
-               AND status = 'review'
+               AND status IN ('review', 'coordinator_review')
                AND claim_lock IS NULL
             """,
             (lock, expires, now, task_id),
@@ -3863,7 +3978,7 @@ def claim_review_task(
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": source_status or "review"},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -4844,7 +4959,15 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+    category = "review-required" if (reason or "").lower().startswith("review-required") else "human-blocker"
+    request_coordinator_review(
+        conn,
+        task_id,
+        category=category,
+        reason=reason,
+        trigger_event="blocked",
+    )
+    return True
 
 
 
@@ -6536,6 +6659,15 @@ def _record_task_failure(
                     run_id=run_id,
                 )
             # Timeout/crash path's caller already emitted its own event.
+    if tripped:
+        request_coordinator_review(
+            conn,
+            task_id,
+            category=outcome,
+            reason=error,
+            trigger_event="gave_up",
+            payload={"outcome": outcome},
+        )
     return tripped
 
 
@@ -6713,7 +6845,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one review+assigned+unclaimed task
+    """Return True iff there is at least one review-holder+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
 
     Mirror of :func:`has_spawnable_ready` for the review column —
@@ -6722,7 +6854,7 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     """
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
+        "WHERE status IN ('review', 'coordinator_review') AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
     if not rows:
@@ -6975,6 +7107,19 @@ def dispatch_once(
                         conn, row["id"], "respawn_guarded",
                         {"reason": guard_reason},
                     )
+                if guard_reason in {"active_pr", "blocker_auth"}:
+                    request_coordinator_review(
+                        conn,
+                        row["id"],
+                        category=guard_reason,
+                        reason=(
+                            "Dispatcher respawn guard deferred this task: "
+                            f"{guard_reason}. Coordinator should classify "
+                            "whether to delegate, re-dispatch, create a deployment/review "
+                            "cluster, or preserve a true human blocker."
+                        ),
+                        trigger_event="respawn_guarded",
+                    )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
@@ -7043,18 +7188,18 @@ def dispatch_once(
             if auto:
                 result.auto_blocked.append(claimed.id)
 
-    # ---- review column dispatch ----
+    # ---- review/coordinator-review column dispatch ----
     # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
+    # creating a PR.  Coordinator-review tasks are holder rows created from
+    # blocker/review-required signals so a coordinator profile is called via an
+    # executable lane, not merely by a comment on the blocked source task.
     #
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
     review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
+        "SELECT id, assignee, status FROM tasks "
+        "WHERE status IN ('review', 'coordinator_review') AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
@@ -7089,12 +7234,15 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
+        # Force-load sdlc-review skill for PR review agents.  Coordinator-review
+        # holders keep their stored skills (usually kanban-orchestrator) so the
+        # coordinator can classify/delegate instead of running PR review logic.
         # _default_spawn function already auto-loads kanban-worker, and
         # appends task.skills via --skills.  Setting task.skills here
         # means the review agent gets both kanban-worker (lifecycle)
         # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
+        if row["status"] == "review":
+            claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

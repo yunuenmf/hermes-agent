@@ -218,7 +218,7 @@ def _trigger_assignment_dispatch(
     The gateway embedded dispatcher still performs periodic fleet ticks, but
     dashboard create/reassign should not rely on a future 60-second poll to
     wake a project profile. This helper validates that the task is a ready or
-    review task assigned to a real Hermes profile, records a visible trigger
+    review/coordinator-review task assigned to a real Hermes profile, records a visible trigger
     event, and then invokes the same ``kanban_db.dispatch_once`` code path the
     gateway uses. The dispatcher's own profile-existence guard remains the
     final safety net.
@@ -227,7 +227,7 @@ def _trigger_assignment_dispatch(
     if task is None:
         return None
     payload_base = {"source": source, "assignee": task.assignee, "status": task.status}
-    if task.status not in {"ready", "review"}:
+    if task.status not in {"ready", "review", "coordinator_review"}:
         return None
     if not task.assignee:
         return None
@@ -1126,7 +1126,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 )
 
         assignment_changed = payload.assignee is not None
-        ready_requested = payload.status in {"ready", "review"}
+        ready_requested = payload.status in {"ready", "review", "coordinator_review"}
         if assignment_changed or ready_requested:
             assignment_trigger = _trigger_assignment_dispatch(
                 conn,
