@@ -348,6 +348,10 @@ def _make_adapter():
         extra={
             "homeserver": "https://matrix.example.org",
             "user_id": "@bot:example.org",
+            # Keep tests deterministic even when the developer shell has live
+            # Matrix gateway env vars exported.
+            "allowed_rooms": "",
+            "allowed_rooms_apply_to_dms": False,
         },
     )
     adapter = MatrixAdapter(config)
@@ -385,6 +389,59 @@ class TestMatrixTypingIndicator:
     async def test_stop_typing_suppresses_exceptions(self):
         self.adapter._client.set_typing = AsyncMock(side_effect=Exception("network"))
         await self.adapter.stop_typing("!room:example.org")  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Invite auto-join policy
+# ---------------------------------------------------------------------------
+class TestMatrixInviteAutjoinPolicy:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._client = MagicMock()
+        self.adapter._client.join_room = AsyncMock()
+        self.adapter._refresh_dm_cache = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_invite_outside_allowed_rooms_is_not_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!space:example.org"))
+
+        self.adapter._client.join_room.assert_not_awaited()
+        assert "!space:example.org" not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_pending_invite_outside_allowed_rooms_is_not_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._join_pending_invites(
+            {"rooms": {"invite": {"!space:example.org": {}}}}
+        )
+
+        self.adapter._client.join_room.assert_not_awaited()
+        assert "!space:example.org" not in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_invite_for_allowed_room_is_joined(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = False
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!allowed:example.org"))
+
+        self.adapter._client.join_room.assert_awaited_once()
+        assert "!allowed:example.org" in self.adapter._joined_rooms
+
+    @pytest.mark.asyncio
+    async def test_unlisted_invite_can_opt_in_to_legacy_autojoin(self):
+        self.adapter._allowed_rooms = {"!allowed:example.org"}
+        self.adapter._auto_join_unlisted_invites = True
+
+        await self.adapter._on_invite(types.SimpleNamespace(room_id="!space:example.org"))
+
+        self.adapter._client.join_room.assert_awaited_once()
+        assert "!space:example.org" in self.adapter._joined_rooms
 
 
 # ---------------------------------------------------------------------------
@@ -1182,6 +1239,7 @@ class TestMatrixPasswordLoginDeviceId:
                 "user_id": "@bot:example.org",
                 "password": "secret",
                 "device_id": "STABLE_PW_DEVICE",
+                "encryption": False,
             },
         )
         adapter = MatrixAdapter(config)
@@ -1957,6 +2015,131 @@ class TestMatrixReactions:
 # ---------------------------------------------------------------------------
 # Read receipts
 # ---------------------------------------------------------------------------
+
+class TestMatrixAllowedRoomsGating:
+    @pytest.mark.asyncio
+    async def test_strict_allowed_rooms_drops_event_before_message_dispatch(self):
+        """Strict room whitelist must stop wrong-profile DMs before model dispatch."""
+        adapter = _make_adapter()
+        adapter._allowed_rooms = {"!allowed:ex"}
+        adapter._allowed_rooms_apply_to_dms = True
+        adapter._is_dm_room = AsyncMock(return_value=True)
+        adapter._handle_text_message = AsyncMock()
+
+        event = types.SimpleNamespace(
+            room_id="!other-profile-dm:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            timestamp=int((adapter._startup_ts + 10) * 1000),
+            content={"msgtype": "m.text", "body": "hello"},
+        )
+
+        await adapter._on_room_message(event)
+
+        adapter._handle_text_message.assert_not_awaited()
+        adapter._is_dm_room.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_allowed_rooms_drops_media_before_download(self):
+        """Wrong-profile media must not be downloaded/cached before room gating."""
+        adapter = _make_adapter()
+        adapter._allowed_rooms = {"!allowed:ex"}
+        adapter._allowed_rooms_apply_to_dms = True
+        adapter._client = MagicMock()
+        adapter._client.download_media = AsyncMock(return_value=b"image-bytes")
+        adapter._is_dm_room = AsyncMock(return_value=True)
+
+        await adapter._handle_media_message(
+            room_id="!other-profile-dm:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            event_ts=0,
+            source_content={
+                "msgtype": "m.image",
+                "body": "photo.png",
+                "url": "mxc://example/media",
+                "info": {"mimetype": "image/png"},
+            },
+            relates_to={},
+            msgtype="m.image",
+        )
+
+        adapter._client.download_media.assert_not_awaited()
+        adapter._is_dm_room.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_rooms_can_apply_to_dm_rooms(self, monkeypatch):
+        """Profile DM rooms must be whitelistable in multi-profile gateways."""
+        adapter = _make_adapter()
+        adapter._allowed_rooms = {"!allowed:ex"}
+        adapter._allowed_rooms_apply_to_dms = True
+        adapter._is_dm_room = AsyncMock(return_value=True)
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._background_read_receipt = MagicMock()
+
+        ctx = await adapter._resolve_message_context(
+            room_id="!other-profile-dm:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is None
+        adapter._background_read_receipt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_rooms_dm_exemption_remains_default(self, monkeypatch):
+        """Keep historical DM exemption unless explicitly enabled by env."""
+        adapter = _make_adapter()
+        adapter._allowed_rooms = {"!allowed:ex"}
+        adapter._allowed_rooms_apply_to_dms = False
+        adapter._is_dm_room = AsyncMock(return_value=True)
+        adapter._get_display_name = AsyncMock(return_value="Alice")
+        adapter._background_read_receipt = MagicMock()
+
+        ctx = await adapter._resolve_message_context(
+            room_id="!other-profile-dm:ex",
+            sender="@alice:ex",
+            event_id="$event1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        adapter._background_read_receipt.assert_called_once_with(
+            "!other-profile-dm:ex", "$event1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_strict_allowed_rooms_drops_reactions_outside_whitelist(self):
+        """Wrong-profile reactions must not resolve approvals or mutate sessions."""
+        from gateway.platforms.matrix import _MatrixApprovalPrompt
+
+        adapter = _make_adapter()
+        adapter._allowed_rooms = {"!allowed:ex"}
+        adapter._allowed_rooms_apply_to_dms = True
+        adapter._approval_prompts_by_event["$prompt"] = _MatrixApprovalPrompt(
+            session_key="agent:wrong-room",
+            chat_id="!other-profile-dm:ex",
+            message_id="$prompt",
+        )
+        adapter._redact_bot_approval_reactions = AsyncMock()
+
+        event = types.SimpleNamespace(
+            room_id="!other-profile-dm:ex",
+            sender="@alice:ex",
+            event_id="$reaction1",
+            content={"m.relates_to": {"event_id": "$prompt", "key": "✅"}},
+        )
+
+        await adapter._on_reaction(event)
+
+        assert adapter._approval_prompts_by_event["$prompt"].resolved is False
+        adapter._redact_bot_approval_reactions.assert_not_awaited()
+
 
 class TestMatrixReadReceipts:
     def setup_method(self):

@@ -4386,7 +4386,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'working')
+                   AND status IN ('running', 'ready', 'blocked', 'working', 'scheduled')
                 """,
                 (result, now, task_id),
             )
@@ -4401,7 +4401,7 @@ def complete_task(
                        claim_expires= NULL,
                        worker_pid   = NULL
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'working')
+                   AND status IN ('running', 'ready', 'blocked', 'working', 'scheduled')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
